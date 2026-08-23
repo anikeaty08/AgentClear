@@ -19,7 +19,12 @@ export type DomainErrorCode =
   | 'SETTLEMENT_IN_PROGRESS'
   | 'JOB_NOT_SETTLEABLE'
   | 'REPUTATION_IN_PROGRESS'
-  | 'JOB_NOT_REPUTABLE';
+  | 'JOB_NOT_REPUTABLE'
+  | 'RECEIPT_IN_PROGRESS'
+  | 'JOB_NOT_RECEIPTABLE'
+  | 'RECEIPT_NOT_FOUND'
+  | 'RECEIPT_TOO_LARGE'
+  | 'RECEIPT_INTEGRITY_FAILED';
 
 export class DomainError extends Error {
   public constructor(
@@ -226,6 +231,48 @@ export class JobNotReputableError extends DomainError {
       'JOB_NOT_REPUTABLE',
       'The job does not have a matching finalized payment or refund outcome.',
       409,
+    );
+  }
+}
+
+export class ReceiptInProgressError extends DomainError {
+  public constructor(jobId: string) {
+    super(
+      'RECEIPT_IN_PROGRESS',
+      `Job ${jobId} already has an unfinished receipt operation.`,
+      409,
+    );
+  }
+}
+
+export class JobNotReceiptableError extends DomainError {
+  public constructor() {
+    super(
+      'JOB_NOT_RECEIPTABLE',
+      'The job does not have matching finalized settlement, evidence, and reputation records.',
+      409,
+    );
+  }
+}
+
+export class ReceiptNotFoundError extends DomainError {
+  public constructor(id: string) {
+    super('RECEIPT_NOT_FOUND', `Receipt ${id} was not found.`, 404);
+  }
+}
+
+export class ReceiptTooLargeError extends DomainError {
+  public constructor() {
+    super('RECEIPT_TOO_LARGE', 'The canonical receipt exceeds the configured payload limit.', 413);
+  }
+}
+
+export class ReceiptIntegrityFailedError extends DomainError {
+  public constructor() {
+    super(
+      'RECEIPT_INTEGRITY_FAILED',
+      'The portable receipt does not match its persisted cryptographic commitment.',
+      502,
     );
   }
 }

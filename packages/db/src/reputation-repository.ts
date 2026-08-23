@@ -20,6 +20,7 @@ import {
   jobs,
   reputationEvents,
   reputationOperations,
+  receiptOperations,
   settlementOperations,
   submissionOperations,
   verificationOperations,
@@ -171,6 +172,10 @@ export class PostgresReputationRepository implements ReputationRepository {
         .from(reputationOperations)
         .where(ne(reputationOperations.status, 'CONFIRMED'))
         .limit(1);
+      const [activeReceipt] = await transaction.select({ id: receiptOperations.id })
+        .from(receiptOperations)
+        .where(ne(receiptOperations.status, 'CONFIRMED'))
+        .limit(1);
       if (
         activeFunding !== undefined
         || activeAssignment !== undefined
@@ -178,6 +183,7 @@ export class PostgresReputationRepository implements ReputationRepository {
         || activeVerification !== undefined
         || activeSettlement !== undefined
         || activeReputation !== undefined
+        || activeReceipt !== undefined
       ) throw new ChainSignerBusyError();
       const [inserted] = await transaction.insert(reputationOperations).values({
         id: input.operation.id,

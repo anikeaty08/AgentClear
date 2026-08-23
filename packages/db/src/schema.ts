@@ -2,6 +2,7 @@ import type {
   JobAgreement,
   JobState,
   JsonValue,
+  PortableReceipt,
   VerificationCheckResult,
   VerificationOutcome,
 } from '@agentclear/domain';
@@ -77,6 +78,11 @@ export const reputationOperationStatusEnum = pgEnum('reputation_operation_status
   'CREATED',
   'PREPARED',
   'BROADCAST',
+  'CONFIRMED',
+]);
+export const receiptOperationStatusEnum = pgEnum('receipt_operation_status', [
+  'CREATED',
+  'STORING',
   'CONFIRMED',
 ]);
 
@@ -583,6 +589,63 @@ export const reputationEvents = pgTable('reputation_events', {
   createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull(),
 });
 
+export const receiptOperations = pgTable(
+  'receipt_operations',
+  {
+    id: uuid('id').primaryKey(),
+    receiptId: uuid('receipt_id').notNull(),
+    jobId: uuid('job_id')
+      .notNull()
+      .references(() => jobs.id, { onDelete: 'restrict' }),
+    status: receiptOperationStatusEnum('status').notNull(),
+    canonicalPayload: text('canonical_payload'),
+    receiptHash: varchar('receipt_hash', { length: 66 }).notNull(),
+    storageRootHash: varchar('storage_root_hash', { length: 66 }),
+    storageTransactionHash: varchar('storage_transaction_hash', { length: 66 }),
+    storageTransactionSequence: bigint('storage_transaction_sequence', { mode: 'number' }),
+    sizeBytes: integer('size_bytes').notNull(),
+    idempotencyScope: varchar('idempotency_scope', { length: 255 }).notNull(),
+    idempotencyKey: varchar('idempotency_key', { length: 255 }).notNull(),
+    requestHash: varchar('request_hash', { length: 66 }).notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull(),
+  },
+  (table) => [
+    unique('receipt_operations_receipt_unique').on(table.receiptId),
+    unique('receipt_operations_job_unique').on(table.jobId),
+    unique('receipt_operations_hash_unique').on(table.receiptHash),
+    unique('receipt_operations_idempotency_unique').on(
+      table.idempotencyScope,
+      table.idempotencyKey,
+    ),
+    index('receipt_operations_status_updated_at_idx').on(table.status, table.updatedAt),
+  ],
+);
+
+export const receipts = pgTable(
+  'receipts',
+  {
+    id: uuid('id').primaryKey(),
+    jobId: uuid('job_id')
+      .notNull()
+      .references(() => jobs.id, { onDelete: 'restrict' }),
+    version: varchar('version', { length: 10 }).notNull(),
+    receiptHash: varchar('receipt_hash', { length: 66 }).notNull(),
+    receipt: jsonb('receipt').$type<PortableReceipt>().notNull(),
+    canonicalPayload: text('canonical_payload').notNull(),
+    storageRootHash: varchar('storage_root_hash', { length: 66 }).notNull(),
+    storageTransactionHash: varchar('storage_transaction_hash', { length: 66 }),
+    storageTransactionSequence: bigint('storage_transaction_sequence', { mode: 'number' }).notNull(),
+    sizeBytes: integer('size_bytes').notNull(),
+    publishedAt: timestamp('published_at', { withTimezone: true, mode: 'date' }).notNull(),
+  },
+  (table) => [
+    unique('receipts_job_unique').on(table.jobId),
+    unique('receipts_hash_unique').on(table.receiptHash),
+    index('receipts_storage_root_hash_idx').on(table.storageRootHash),
+  ],
+);
+
 export const databaseSchema = {
   jobs,
   jobRequirements,
@@ -604,4 +667,6 @@ export const databaseSchema = {
   refunds,
   reputationOperations,
   reputationEvents,
+  receiptOperations,
+  receipts,
 };

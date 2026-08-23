@@ -26,6 +26,7 @@ import {
   verificationOperations,
   settlementOperations,
   reputationOperations,
+  receiptOperations,
 } from './schema.js';
 
 function rowToAssignmentOperation(
@@ -203,6 +204,11 @@ export class PostgresAssignmentRepository implements AssignmentRepository {
         .from(reputationOperations)
         .where(sql`${reputationOperations.status} <> 'CONFIRMED'`)
         .limit(1);
+      const [activeReceipt] = await transaction
+        .select({ id: receiptOperations.id })
+        .from(receiptOperations)
+        .where(sql`${receiptOperations.status} <> 'CONFIRMED'`)
+        .limit(1);
       if (
         activeFunding !== undefined
         || otherAssignment !== undefined
@@ -210,6 +216,7 @@ export class PostgresAssignmentRepository implements AssignmentRepository {
         || activeVerification !== undefined
         || activeSettlement !== undefined
         || activeReputation !== undefined
+        || activeReceipt !== undefined
       ) {
         throw new ChainSignerBusyError();
       }

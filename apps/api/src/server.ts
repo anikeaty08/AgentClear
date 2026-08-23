@@ -15,6 +15,7 @@ import {
   PostgresVerificationRepository,
   PostgresSettlementRepository,
   PostgresReputationRepository,
+  PostgresReceiptRepository,
 } from '@agentclear/db';
 import {
   AssignmentService,
@@ -26,6 +27,7 @@ import {
   VerificationService,
   SettlementService,
   ReputationService,
+  ReceiptService,
 } from '@agentclear/domain';
 import { ZeroGStorageClient } from '@agentclear/storage';
 
@@ -167,6 +169,15 @@ const reputationService =
         gateway: reputationGateway,
         executor: chainWriteExecutor,
       });
+const receiptService =
+  config.storage === undefined || storage === undefined
+    ? undefined
+    : new ReceiptService({
+        repository: new PostgresReceiptRepository(database.db),
+        storage,
+        maxPayloadBytes: config.storage.maxPayloadBytes,
+        executor: chainWriteExecutor,
+      });
 const authenticators = [
   new BootstrapApiKeyAuthenticator(
     config.auth.bootstrapApiKey,
@@ -199,6 +210,7 @@ const app = await buildApp({
   ...(verificationService === undefined ? {} : { verificationService }),
   ...(settlementService === undefined ? {} : { settlementService }),
   ...(reputationService === undefined ? {} : { reputationService }),
+  ...(receiptService === undefined ? {} : { receiptService }),
   ...(chain === undefined
     ? {}
     : {

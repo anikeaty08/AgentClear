@@ -14,6 +14,7 @@ import {
   PostgresAssignmentRepository,
   PostgresEscrowRepository,
   PostgresJobRepository,
+  PostgresReceiptRepository,
   PostgresReputationRepository,
   PostgresSubmissionRepository,
   PostgresVerificationRepository,
@@ -24,6 +25,7 @@ import {
   FundingService,
   InMemoryExclusiveExecutor,
   JobService,
+  ReceiptService,
   ReputationService,
   SubmissionQueryService,
   SubmissionService,
@@ -350,6 +352,12 @@ describe.skipIf(databaseUrl === undefined)('AgentClear funding API with PostgreS
         gateway: reputationGateway,
         executor: chainWriteExecutor,
       }),
+      receiptService: new ReceiptService({
+        repository: new PostgresReceiptRepository(database.db),
+        storage: evidenceStorage,
+        maxPayloadBytes: 262_144,
+        executor: chainWriteExecutor,
+      }),
       fundingService: new FundingService({
         jobRepository,
         escrowRepository: new PostgresEscrowRepository(database.db),
@@ -388,7 +396,7 @@ describe.skipIf(databaseUrl === undefined)('AgentClear funding API with PostgreS
   beforeEach(async () => {
     evidenceStorage.reset();
     await database.db.execute(
-      sql`truncate table reputation_events, reputation_operations, settlements, refunds, settlement_operations, verification_reports, verification_checks, verification_runs, verification_operations, submission_artifacts, submissions, submission_operations, job_assignment_operations, job_assignments, escrow_funding_operations, escrows, idempotency_records, job_state_events, job_requirements, jobs`,
+      sql`truncate table receipts, receipt_operations, reputation_events, reputation_operations, settlements, refunds, settlement_operations, verification_reports, verification_checks, verification_runs, verification_operations, submission_artifacts, submissions, submission_operations, job_assignment_operations, job_assignments, escrow_funding_operations, escrows, idempotency_records, job_state_events, job_requirements, jobs`,
     );
   });
 
@@ -646,13 +654,62 @@ describe.skipIf(databaseUrl === undefined)('AgentClear funding API with PostgreS
       blockNumber: expect.any(String),
       feedbackIndex: expect.stringMatching(/^\d+$/),
     });
+    expect(settled.json().data.receipt).toMatchObject({
+      id: expect.any(String),
+      jobId,
+      receiptHash: expect.stringMatching(/^0x[0-9a-f]{64}$/),
+      storageRef: expect.stringMatching(/^0g:\/\/0x[0-9a-f]{64}$/),
+      receipt: {
+        jobId,
+        buyerAgent: 'erc8004:31337:123',
+        providerAgent: 'erc8004:31337:456',
+        verification: { outcome: 'PASS' },
+        settlement: { kind: 'PAYMENT' },
+        reputation: { value: '100' },
+      },
+    });
     expect(settled.body).not.toContain('serializedTransaction');
+    expect(settled.body).not.toContain('canonicalPayload');
     expect(settlementReplay.headers['idempotency-replayed']).toBe('true');
     expect(reputationReplay.statusCode, reputationReplay.body).toBe(200);
     expect(reputationReplay.headers['idempotency-replayed']).toBe('true');
     expect(reputationReplay.json().data.reputation.transactionHash).toBe(
       settled.json().data.reputation.transactionHash,
     );
+    const receiptId = settled.json().data.receipt.id as string;
+    const receipt = await app.inject({
+      method: 'GET',
+      url: `/v1/receipts/${receiptId}`,
+      headers: { authorization },
+    });
+    const receiptForJob = await app.inject({
+      method: 'GET',
+      url: `/v1/jobs/${jobId}/receipt`,
+      headers: { authorization },
+    });
+    const receiptDownload = await app.inject({
+      method: 'GET',
+      url: `/v1/receipts/${receiptId}/download`,
+      headers: { authorization },
+    });
+    const receiptRecovery = await app.inject({
+      method: 'POST',
+      url: `/v1/jobs/${jobId}/receipt`,
+      headers: { authorization, 'idempotency-key': settlementKey },
+      payload: {},
+    });
+    expect(receipt.statusCode).toBe(200);
+    expect(receiptForJob.statusCode).toBe(200);
+    expect(receiptForJob.json().data.receipt.id).toBe(receiptId);
+    expect(receiptDownload.statusCode).toBe(200);
+    expect(receiptDownload.headers['content-disposition']).toContain(receiptId);
+    expect(JSON.parse(receiptDownload.body).receiptId).toBe(receiptId);
+    expect(`0x${createHash('sha256').update(receiptDownload.body).digest('hex')}`).toBe(
+      settled.json().data.receipt.receiptHash,
+    );
+    expect(receiptRecovery.statusCode).toBe(200);
+    expect(receiptRecovery.headers['idempotency-replayed']).toBe('true');
+    expect(evidenceStorage.calls).toBe(3);
     expect((await gateway.getEscrow(jobId)).state).toBe(3);
     expect(await outcomeGateway.getOutcome(jobId)).toMatchObject({ outcome: 'PASS' });
     const duplicateSettlement = await app.inject({
@@ -679,6 +736,8 @@ describe.skipIf(databaseUrl === undefined)('AgentClear funding API with PostgreS
       settlementPayloads: string;
       reputationEvents: string;
       reputationPayloads: string;
+      receipts: string;
+      receiptPayloads: string;
     }>(sql`
       select
         (select state::text from jobs where id = ${jobId}) as state,
@@ -705,6 +764,10 @@ describe.skipIf(databaseUrl === undefined)('AgentClear funding API with PostgreS
         ,(select count(*)::text from reputation_operations where job_id = ${jobId}
           and serialized_transaction is null
         ) as "reputationPayloads"
+        ,(select count(*)::text from receipts where job_id = ${jobId}) as receipts
+        ,(select count(*)::text from receipt_operations where job_id = ${jobId}
+          and canonical_payload is null
+        ) as "receiptPayloads"
     `);
     expect(persisted.rows[0]).toEqual({
       state: 'PAID',
@@ -721,6 +784,8 @@ describe.skipIf(databaseUrl === undefined)('AgentClear funding API with PostgreS
       settlementPayloads: '1',
       reputationEvents: '1',
       reputationPayloads: '1',
+      receipts: '1',
+      receiptPayloads: '1',
     });
   });
 
@@ -835,29 +900,41 @@ describe.skipIf(databaseUrl === undefined)('AgentClear funding API with PostgreS
         transactionHash: expect.stringMatching(/^0x[0-9a-f]{64}$/),
         feedbackIndex: expect.stringMatching(/^\d+$/),
       },
+      receipt: {
+        jobId,
+        receipt: {
+          verification: { outcome: 'FAIL' },
+          settlement: { kind: 'REFUND' },
+          reputation: { value: '0' },
+        },
+      },
     });
     expect(replayed.statusCode, replayed.body).toBe(200);
     expect(replayed.headers['idempotency-replayed']).toBe('true');
     expect((await gateway.getEscrow(jobId)).state).toBe(4);
     expect(await outcomeGateway.getOutcome(jobId)).toMatchObject({ outcome: 'FAIL' });
+    expect(evidenceStorage.calls).toBe(3);
 
     const persisted = await database.db.execute<{
       settlements: string;
       refunds: string;
       events: string;
       reputationEvents: string;
+      receipts: string;
     }>(sql`
       select
         (select count(*)::text from settlements where job_id = ${jobId}) as settlements,
         (select count(*)::text from refunds where job_id = ${jobId}) as refunds,
         (select count(*)::text from job_state_events where job_id = ${jobId}) as events,
-        (select count(*)::text from reputation_events where job_id = ${jobId}) as "reputationEvents"
+        (select count(*)::text from reputation_events where job_id = ${jobId}) as "reputationEvents",
+        (select count(*)::text from receipts where job_id = ${jobId}) as receipts
     `);
     expect(persisted.rows[0]).toEqual({
       settlements: '0',
       refunds: '1',
       events: '11',
       reputationEvents: '1',
+      receipts: '1',
     });
   });
 });

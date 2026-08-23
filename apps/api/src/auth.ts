@@ -9,6 +9,7 @@ export const AUTH_SCOPES = [
   'jobs:verify',
   'jobs:settle',
   'jobs:reputation',
+  'jobs:receipt',
 ] as const;
 export type AuthScope = (typeof AUTH_SCOPES)[number];
 

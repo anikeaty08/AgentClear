@@ -121,11 +121,19 @@ Verification proof-downloads the submission, checks its SHA-256 commitment and m
 
 The service durably prepares, broadcasts, confirms, and reads back the `OutcomeRegistry` transaction before preparing the `JobEscrow` transaction. When both ERC-8004 addresses are configured, settlement then records matching provider feedback and returns it in `data.reputation`: PASS is `100` and FAIL/refund is `0`, both with zero decimals, `agentclear.outcome` as `tag1`, and the deliverable category as `tag2`. The content-addressed verification report root is used as the feedback URI. The registry verifies that the agent identity exists and prevents the service signer from rating its own identity.
 
-The response contains the payment/refund kind, integer amount, chain hashes/blocks, final timestamp, and optional confirmed reputation event; serialized transactions and private keys are never returned. Exact replay returns the original finalization and feedback with `Idempotency-Replayed: true`. A different key cannot finalize or rate the same job again.
+When both reputation and Storage are configured, the same request then publishes the portable receipt and returns public receipt metadata in `data.receipt`. The response contains the payment/refund kind, integer amount, chain hashes/blocks, final timestamp, optional confirmed reputation event, and optional receipt; serialized transactions, pending canonical payloads, and private keys are never returned. Exact replay returns the original finalization, feedback, and receipt with `Idempotency-Replayed: true`. A different key cannot finalize or rate the same job again.
 
 ## Recover a reputation write
 
-`POST /v1/jobs/:id/reputation` requires `jobs:reputation`, an idempotency key, an empty body, a finalized `PAID`/PASS or `REFUNDED`/FAIL pairing, and configured ERC-8004 registries. It exists so an operator can resume a reputation write if settlement reached its terminal chain state before the registry transaction completed. The operation persists the exact signed transaction before broadcast, supports exact rebroadcast, parses `NewFeedback`, calls `readFeedback`, and compares all outcome fields before confirmation. The response never contains the serialized transaction.
+`POST /v1/jobs/:id/reputation` requires `jobs:reputation`, an idempotency key, an empty body, a finalized `PAID`/PASS or `REFUNDED`/FAIL pairing, and configured ERC-8004 registries. It exists so an operator can resume a reputation write if settlement reached its terminal chain state before the registry transaction completed. The operation persists the exact signed transaction before broadcast, supports exact rebroadcast, parses `NewFeedback`, calls `readFeedback`, and compares all outcome fields before confirmation. If receipt Storage is configured, confirmation also publishes or resumes the matching receipt. The response never contains the serialized transaction.
+
+## Publish and retrieve a portable receipt
+
+`POST /v1/jobs/:id/receipt` requires `jobs:receipt`, an idempotency key, and an empty body. It is the recovery endpoint when settlement and reputation are already confirmed but receipt Storage did not finish. Publication refuses any mismatch among the terminal job, latest submission, verification report, settlement transactions, and reputation event.
+
+`GET /v1/jobs/:id/receipt` and `GET /v1/receipts/:id` require `jobs:read`. They return the versioned proof object plus its SHA-256 commitment, content-addressed Storage reference, publication transaction metadata, byte size, and download path. Internal recovery payloads are not exposed.
+
+`GET /v1/receipts/:id/download` requires `jobs:read` and returns the exact canonical JSON bytes as an attachment. SHA-256 over those bytes must equal `receiptHash`; the response also exposes that commitment as an ETag. See `docs/RECEIPTS.md`.
 
 ## Get a job
 
@@ -143,4 +151,4 @@ The response contains the payment/refund kind, integer amount, chain hashes/bloc
 }
 ```
 
-Stable codes currently include `AUTHENTICATION_REQUIRED`, `INSUFFICIENT_SCOPE`, `INVALID_REQUEST`, `RATE_LIMIT_EXCEEDED`, `JOB_NOT_FOUND`, `JOB_DEADLINE_NOT_FUTURE`, `INVALID_JOB_TRANSITION`, `IDEMPOTENCY_KEY_REUSED`, `CHAIN_UNAVAILABLE`, `CHAIN_OPERATION_FAILED`, `CHAIN_SIGNER_BUSY`, `JOB_FUNDING_IN_PROGRESS`, `JOB_ASSIGNMENT_IN_PROGRESS`, `PROVIDER_MISMATCH`, `PROVIDER_NOT_AUTHORIZED`, `SUBMISSION_IN_PROGRESS`, `SUBMISSION_TOO_LARGE`, `VERIFICATION_IN_PROGRESS`, `VERIFICATION_POLICY_UNSUPPORTED`, `EVIDENCE_INTEGRITY_FAILED`, `SETTLEMENT_IN_PROGRESS`, `JOB_NOT_SETTLEABLE`, `REPUTATION_IN_PROGRESS`, `JOB_NOT_REPUTABLE`, `STORAGE_UNAVAILABLE`, `STORAGE_OPERATION_FAILED`, `SPENDING_POLICY_EXCEEDED`, and `INTERNAL_ERROR`.
+Stable codes currently include `AUTHENTICATION_REQUIRED`, `INSUFFICIENT_SCOPE`, `INVALID_REQUEST`, `RATE_LIMIT_EXCEEDED`, `JOB_NOT_FOUND`, `JOB_DEADLINE_NOT_FUTURE`, `INVALID_JOB_TRANSITION`, `IDEMPOTENCY_KEY_REUSED`, `CHAIN_UNAVAILABLE`, `CHAIN_OPERATION_FAILED`, `CHAIN_SIGNER_BUSY`, `JOB_FUNDING_IN_PROGRESS`, `JOB_ASSIGNMENT_IN_PROGRESS`, `PROVIDER_MISMATCH`, `PROVIDER_NOT_AUTHORIZED`, `SUBMISSION_IN_PROGRESS`, `SUBMISSION_TOO_LARGE`, `VERIFICATION_IN_PROGRESS`, `VERIFICATION_POLICY_UNSUPPORTED`, `EVIDENCE_INTEGRITY_FAILED`, `SETTLEMENT_IN_PROGRESS`, `JOB_NOT_SETTLEABLE`, `REPUTATION_IN_PROGRESS`, `JOB_NOT_REPUTABLE`, `RECEIPT_IN_PROGRESS`, `JOB_NOT_RECEIPTABLE`, `RECEIPT_NOT_FOUND`, `RECEIPT_TOO_LARGE`, `RECEIPT_INTEGRITY_FAILED`, `STORAGE_UNAVAILABLE`, `STORAGE_OPERATION_FAILED`, `SPENDING_POLICY_EXCEEDED`, and `INTERNAL_ERROR`.

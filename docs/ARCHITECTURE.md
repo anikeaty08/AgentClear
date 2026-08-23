@@ -57,7 +57,7 @@ CREATED -> PREPARED -> BROADCAST -> CONFIRMED
 
 The job stays `QUOTED` until funding receipt and state attestation both succeed. Assignment first records `FUNDED -> OPEN`; it records `OPEN -> ASSIGNED` only after the provider stored in the escrow matches the request. Each confirmation updates the operation, escrow record, job state, and immutable state event in one database transaction. Serialized signed transactions are cleared after confirmation and are never returned by REST. A per-job base-unit spending ceiling and separate `jobs:fund` and `jobs:assign` scopes are enforced before signing.
 
-Funding, assignment, 0G Storage submission, verification publication, outcome anchoring, settlement, and ERC-8004 feedback reuse one configured signer. A PostgreSQL session advisory lock spans each complete external operation, including preparation, persistence, broadcast/upload, confirmation, and database finalization, so independent API instances cannot concurrently consume its nonce. Repository transactions take a separate state lock, and any unfinished signed or storage operation blocks unrelated writes until it is resumed with its original idempotency key. This protects local, restart, and multi-instance recovery. Automated stale-operation reconciliation and hardened external signer custody remain release blockers.
+Funding, assignment, 0G Storage submission, verification publication, outcome anchoring, settlement, ERC-8004 feedback, and receipt publication reuse one configured signer. A PostgreSQL session advisory lock spans each complete external operation, including preparation, persistence, broadcast/upload, confirmation, and database finalization, so independent API instances cannot concurrently consume its nonce. Repository transactions take a separate state lock, and any unfinished signed or storage operation blocks unrelated writes until it is resumed with its original idempotency key. This protects local, restart, and multi-instance recovery. Automated stale-operation reconciliation and hardened external signer custody remain release blockers.
 
 Provider agent identifiers are syntax-checked and agreement-constrained during assignment. ERC-8004 feedback resolves the token through `IdentityRegistry.ownerOf` and rejects self-feedback, but assignment itself does not yet prove token ownership or bind the identity token to the provider payment address.
 
@@ -117,6 +117,21 @@ CREATED -> PREPARED -> BROADCAST -> CONFIRMED
 
 One database operation and one confirmed reputation event are permitted per AgentClear job. The report's content-addressed Storage root is the evidence URI; the bytes32 hash is zero as allowed for content-addressed URIs. The app does not hardcode registry deployments. Local tests deploy a controlled exact-interface fixture, while live 0G addresses must come from environment configuration. See `docs/ERC8004.md`.
 
+## Portable receipt boundary
+
+`ReceiptService` materializes an immutable versioned snapshot only after it can join one matching terminal job, submission, verification report, confirmed settlement, payment/refund row, and reputation event. It derives all fields from durable state; clients cannot supply receipt contents. The canonical JSON is persisted and SHA-256 committed before Storage I/O, verified again during recovery, proof-uploaded through the same evidence port, then written to the immutable `receipts` table. The pending operation payload is cleared after confirmation while the exact downloadable bytes remain with the durable receipt.
+
+```text
+PAID + PASS + reputation 100       --\
+                                      -> canonical receipt -> Storage -> REST/download
+REFUNDED + FAIL + reputation 0    --/
+
+CREATED -> STORING -> CONFIRMED
+             `-- resume exact canonical bytes --'
+```
+
+One receipt is permitted per job and commitment. REST and the future MCP adapter consume the same service. Publication is part of the settlement/reputation recovery chain, but it has a separate idempotent endpoint so an interrupted Storage call cannot require a new payment or reputation transaction. See `docs/RECEIPTS.md`.
+
 ## Minimal infrastructure choice
 
 PostgreSQL is currently the only stateful dependency. Redis was intentionally omitted. Verification dispatch, chain reconciliation, and webhook delivery will first use a PostgreSQL outbox/lease design with idempotent workers. Another queue system should be added only when measured throughput or isolation requirements justify it.
@@ -131,4 +146,4 @@ agreement -> 0G Chain escrow -> 0G Storage submission evidence
           -> outcome anchor -> settle/refund -> ERC-8004 feedback -> receipt
 ```
 
-Outcome anchoring, settlement/refund, and ERC-8004 feedback are now implemented locally. The sandbox, Compute, and receipt boundaries remain planned and do not report simulated success. Each adapter exposes degraded health until it has valid configuration, and integration tests distinguish local contract tests from live 0G testnet proof.
+Outcome anchoring, settlement/refund, ERC-8004 feedback, and portable receipts are now implemented locally. The sandbox and Compute boundaries remain planned and do not report simulated success. Each adapter exposes degraded health until it has valid configuration, and integration tests distinguish local contract tests from live 0G testnet proof.

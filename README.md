@@ -2,7 +2,7 @@
 
 AgentClear is an outcome-verification and settlement layer for AI-agent commerce on 0G. It binds a structured task agreement to escrow, evidence-backed verification, settlement or refund, and transaction-backed agent reputation.
 
-The repository is under active development. The real local EVM vertical flow now reaches both terminal payment outcomes: create and quote an agreement, fund escrow, assign the provider, store and verify evidence, anchor `PASS` or `FAIL` in `OutcomeRegistry`, release or refund `JobEscrow`, and write outcome feedback through the current ERC-8004 `ReputationRegistry` interface. The two automated REST flows use PostgreSQL, real signed Anvil transactions, deployed contracts, and an explicitly labelled content-addressed Storage test adapter because no live 0G credentials are available. Production 0G Storage and config-driven ERC-8004 adapters are implemented, but a 0G testnet deployment, live Storage/reputation proof, Compute, portable receipts, MCP, and the operator UI remain in progress and are not simulated.
+The repository is under active development. The real local EVM vertical flow now reaches both terminal payment outcomes: create and quote an agreement, fund escrow, assign the provider, store and verify evidence, anchor `PASS` or `FAIL` in `OutcomeRegistry`, release or refund `JobEscrow`, write outcome feedback through the current ERC-8004 `ReputationRegistry` interface, and publish a portable content-addressed receipt. The two automated REST flows use PostgreSQL, real signed Anvil transactions, deployed contracts, and an explicitly labelled content-addressed Storage test adapter because no live 0G credentials are available. Production 0G Storage and config-driven ERC-8004 adapters are implemented, but a 0G testnet deployment, live Storage/reputation proof, Compute, MCP, and the operator UI remain in progress and are not simulated.
 
 ```mermaid
 flowchart LR
@@ -17,7 +17,8 @@ flowchart LR
   Verify --> Outcome[OutcomeRegistry commitment]
   Outcome --> Chain
   Chain --> Reputation[ERC-8004 reputation feedback]
-  Reputation -. planned .-> Receipt[Portable receipt]
+  Reputation --> Receipt[Portable receipt]
+  Receipt --> REST[REST lookup + exact JSON download]
 ```
 
 ## Current stack
@@ -73,6 +74,6 @@ forge test --root packages/contracts -vvv
 - `.0g-skills` -- vendored 0G reference material; current official docs and installed package source remain higher authority
 - `docs` -- architecture, API, contracts, security, and testing notes matching implemented behavior
 
-See [`AGENTS.md`](./AGENTS.md) for the full product definition, [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) for current boundaries, [`docs/STORAGE.md`](./docs/STORAGE.md) for the exact 0G Storage integration, and [`docs/ERC8004.md`](./docs/ERC8004.md) for verified registry sources and configuration.
+See [`AGENTS.md`](./AGENTS.md) for the full product definition, [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) for current boundaries, [`docs/STORAGE.md`](./docs/STORAGE.md) for the exact 0G Storage integration, [`docs/ERC8004.md`](./docs/ERC8004.md) for verified registry sources and configuration, and [`docs/RECEIPTS.md`](./docs/RECEIPTS.md) for receipt integrity and retrieval.
 
 No live contract address, transaction hash, 0G Storage reference, Compute receipt, or ERC-8004 deployment is published yet because none has been exercised on 0G testnet from this repository.

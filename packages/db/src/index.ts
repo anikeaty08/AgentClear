@@ -8,3 +8,4 @@ export * from './submission-repository.js';
 export * from './verification-repository.js';
 export * from './settlement-repository.js';
 export * from './reputation-repository.js';
+export * from './receipt-repository.js';

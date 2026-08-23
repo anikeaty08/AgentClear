@@ -12,6 +12,8 @@ import type {
   VerificationService,
   SettlementService,
   ReputationService,
+  ReceiptService,
+  ReceiptRecord,
 } from '@agentclear/domain';
 import { DomainError } from '@agentclear/domain';
 import Fastify, { LogController, type FastifyRequest, type FastifyServerOptions } from 'fastify';
@@ -28,6 +30,23 @@ declare module 'fastify' {
 
 const idempotencyKeySchema = z.string().min(8).max(255).regex(/^[A-Za-z0-9._:-]+$/);
 const jobIdParamsSchema = z.object({ id: z.uuid() }).strict();
+
+function publicReceipt(record: ReceiptRecord) {
+  return {
+    id: record.id,
+    jobId: record.jobId,
+    version: record.version,
+    receiptHash: record.receiptHash,
+    receipt: record.receipt,
+    storageRef: `0g://${record.storageRootHash}`,
+    storageRootHash: record.storageRootHash,
+    storageTransactionHash: record.storageTransactionHash,
+    storageTransactionSequence: record.storageTransactionSequence,
+    sizeBytes: record.sizeBytes,
+    publishedAt: record.publishedAt,
+    downloadPath: `/v1/receipts/${record.id}/download`,
+  };
+}
 
 function readBearerToken(request: FastifyRequest): string | null {
   const authorization = request.headers.authorization;
@@ -64,6 +83,7 @@ export type BuildAppOptions = {
   verificationQueryService: VerificationQueryService;
   settlementService?: SettlementService;
   reputationService?: ReputationService;
+  receiptService?: ReceiptService;
   chainHealth?: () => Promise<unknown>;
   storageHealth?: () => Promise<unknown>;
   logger?: FastifyServerOptions['logger'];
@@ -348,7 +368,15 @@ export async function buildApp(options: BuildAppOptions) {
           actor: { type: principal.kind === 'agent' ? 'agent' : 'operator', id: principal.id },
           idempotencyKey,
         });
-    const replayed = result.replayed && (reputation?.replayed ?? true);
+    const receipt = reputation === null || options.receiptService === undefined
+      ? null
+      : await options.receiptService.publishJob(id, request.body, {
+          actor: { type: principal.kind === 'agent' ? 'agent' : 'operator', id: principal.id },
+          idempotencyKey,
+        });
+    const replayed = result.replayed
+      && (reputation?.replayed ?? true)
+      && (receipt?.replayed ?? true);
     return reply
       .header('idempotency-replayed', replayed ? 'true' : 'false')
       .send({
@@ -366,6 +394,9 @@ export async function buildApp(options: BuildAppOptions) {
             escrowBlockNumber: result.operation.escrowBlockNumber,
           },
           reputation: reputation?.reputation ?? null,
+          receipt: receipt?.receipt === null || receipt === null
+            ? null
+            : publicReceipt(receipt.receipt),
         },
         meta: { requestId: request.id, replayed },
       });
@@ -386,8 +417,15 @@ export async function buildApp(options: BuildAppOptions) {
       actor: { type: principal.kind === 'agent' ? 'agent' : 'operator', id: principal.id },
       idempotencyKey,
     });
+    const receipt = options.receiptService === undefined
+      ? null
+      : await options.receiptService.publishJob(id, request.body, {
+          actor: { type: principal.kind === 'agent' ? 'agent' : 'operator', id: principal.id },
+          idempotencyKey,
+        });
+    const replayed = result.replayed && (receipt?.replayed ?? true);
     return reply
-      .header('idempotency-replayed', result.replayed ? 'true' : 'false')
+      .header('idempotency-replayed', replayed ? 'true' : 'false')
       .send({
         data: {
           reputation: result.reputation,
@@ -399,9 +437,84 @@ export async function buildApp(options: BuildAppOptions) {
             registryAddress: result.operation.contractAddress,
             identityRegistryAddress: result.operation.identityRegistryAddress,
           },
+          receipt: receipt?.receipt === null || receipt === null
+            ? null
+            : publicReceipt(receipt.receipt),
         },
+        meta: { requestId: request.id, replayed },
+      });
+  });
+
+  app.post('/v1/jobs/:id/receipt', async (request, reply) => {
+    const principal = requireScope(request, 'jobs:receipt');
+    const idempotencyKey = idempotencyKeySchema.parse(request.headers['idempotency-key']);
+    const { id } = jobIdParamsSchema.parse(request.params);
+    if (options.receiptService === undefined) {
+      throw new ApiError(
+        'STORAGE_UNAVAILABLE',
+        'Receipt publication is disabled because the evidence store is not configured.',
+        503,
+      );
+    }
+    const result = await options.receiptService.publishJob(id, request.body, {
+      actor: { type: principal.kind === 'agent' ? 'agent' : 'operator', id: principal.id },
+      idempotencyKey,
+    });
+    if (result.receipt === null) {
+      throw new ApiError('RECEIPT_IN_PROGRESS', 'Receipt publication is still in progress.', 409);
+    }
+    return reply
+      .header('idempotency-replayed', result.replayed ? 'true' : 'false')
+      .send({
+        data: { receipt: publicReceipt(result.receipt) },
         meta: { requestId: request.id, replayed: result.replayed },
       });
+  });
+
+  app.get('/v1/jobs/:id/receipt', async (request) => {
+    requireScope(request, 'jobs:read');
+    const { id } = jobIdParamsSchema.parse(request.params);
+    if (options.receiptService === undefined) {
+      throw new ApiError(
+        'STORAGE_UNAVAILABLE',
+        'Receipt retrieval is disabled because the evidence store is not configured.',
+        503,
+      );
+    }
+    const receipt = await options.receiptService.getReceiptForJob(id);
+    return { data: { receipt: publicReceipt(receipt) }, meta: { requestId: request.id } };
+  });
+
+  app.get('/v1/receipts/:id', async (request) => {
+    requireScope(request, 'jobs:read');
+    const { id } = jobIdParamsSchema.parse(request.params);
+    if (options.receiptService === undefined) {
+      throw new ApiError(
+        'STORAGE_UNAVAILABLE',
+        'Receipt retrieval is disabled because the evidence store is not configured.',
+        503,
+      );
+    }
+    const receipt = await options.receiptService.getReceipt(id);
+    return { data: { receipt: publicReceipt(receipt) }, meta: { requestId: request.id } };
+  });
+
+  app.get('/v1/receipts/:id/download', async (request, reply) => {
+    requireScope(request, 'jobs:read');
+    const { id } = jobIdParamsSchema.parse(request.params);
+    if (options.receiptService === undefined) {
+      throw new ApiError(
+        'STORAGE_UNAVAILABLE',
+        'Receipt retrieval is disabled because the evidence store is not configured.',
+        503,
+      );
+    }
+    const receipt = await options.receiptService.getReceipt(id);
+    return reply
+      .type('application/json; charset=utf-8')
+      .header('content-disposition', `attachment; filename="agentclear-receipt-${receipt.id}.json"`)
+      .header('etag', `"${receipt.receiptHash}"`)
+      .send(receipt.canonicalPayload);
   });
 
   return app;
