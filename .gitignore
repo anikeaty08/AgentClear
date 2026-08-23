@@ -5,6 +5,10 @@ dist/
 coverage/
 test-results/
 playwright-report/
+packages/contracts/cache/
+packages/contracts/out/
+packages/contracts/broadcast/
+packages/contracts/lib/
 
 .env
 .env.local
@@ -19,4 +23,3 @@ Thumbs.db
 
 .0g-skills/.git.removed/
 .0g-skills/node_modules/
-

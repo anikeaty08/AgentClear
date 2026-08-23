@@ -36,6 +36,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
+      - name: Install pinned Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: v1.7.1
       - name: Enable pinned pnpm
         run: |
           corepack enable
@@ -52,5 +56,9 @@ jobs:
         run: pnpm test:integration
       - name: Build
         run: pnpm build
+      - name: Contract formatting
+        run: forge fmt --check --root packages/contracts
+      - name: Contract tests
+        run: forge test --root packages/contracts -vvv
       - name: Dependency audit
         run: pnpm audit --audit-level moderate
