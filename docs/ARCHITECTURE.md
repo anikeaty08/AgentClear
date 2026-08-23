@@ -74,6 +74,21 @@ ASSIGNED -> IN_PROGRESS -> SUBMITTED
 
 The REST response contains evidence metadata, never the stored canonical payload. Confirmation clears the payload from the operation row. The production adapter is implemented against the current official SDK, but no live 0G Storage call has been exercised from this repository yet; automated API integration uses a controlled port implementation and does not claim network behavior.
 
+## Deterministic verification boundary
+
+The agreement carries typed deterministic checks instead of asking the verifier to infer rules from prose. `VerificationService` proof-downloads the latest submission, verifies its SHA-256 commitment and manifest bindings, evaluates paths with exact JSON semantics, and calculates an integer weighted score. Hard failures dominate. Reports identify the agreement, submission, verifier version, individual checks, score, and outcome.
+
+The database makes report publication recoverable:
+
+```text
+SUBMITTED -> VERIFYING -> PASSED | FAILED | NEEDS_REVIEW
+                    |
+                    `-> CREATED -> EVALUATED -> STORING -> CONFIRMED
+                                  persist exact report     clear payload
+```
+
+`deterministic_plus_ai` never silently substitutes a model. A deterministic hard failure can produce `FAIL`; otherwise the outcome is `NEEDS_REVIEW` until a real 0G Compute run is available. The locally tested `OutcomeRegistry` and viem gateway can anchor final PASS/FAIL commitments exactly once, but REST settlement has not yet invoked that gateway.
+
 ## Minimal infrastructure choice
 
 PostgreSQL is currently the only stateful dependency. Redis was intentionally omitted. Verification dispatch, chain reconciliation, and webhook delivery will first use a PostgreSQL outbox/lease design with idempotent workers. Another queue system should be added only when measured throughput or isolation requirements justify it.

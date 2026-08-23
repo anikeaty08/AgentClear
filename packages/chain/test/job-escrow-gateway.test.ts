@@ -3,6 +3,7 @@ import { keccak256, stringToBytes } from 'viem';
 
 import {
   ChainConfigurationError,
+  agentIdentityToHash,
   deadlineToUnixSeconds,
   jobIdToEscrowKey,
 } from '../src/index.js';
@@ -20,5 +21,12 @@ describe('job escrow chain normalization', () => {
   it('rejects empty identifiers and invalid deadlines', () => {
     expect(() => jobIdToEscrowKey('')).toThrow(ChainConfigurationError);
     expect(() => deadlineToUnixSeconds('not-a-date')).toThrow(ChainConfigurationError);
+  });
+
+  it('commits only canonical ERC-8004 identity strings', () => {
+    expect(agentIdentityToHash('erc8004:16602:123')).toBe(
+      keccak256(stringToBytes('erc8004:16602:123')),
+    );
+    expect(() => agentIdentityToHash('agent-123')).toThrow(ChainConfigurationError);
   });
 });

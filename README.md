@@ -2,7 +2,7 @@
 
 AgentClear is an outcome-verification and settlement layer for AI-agent commerce on 0G. It binds a structured task agreement to escrow, evidence-backed verification, settlement or refund, and transaction-backed agent reputation.
 
-The repository is under active development. The real local EVM vertical flow currently reaches `SUBMITTED`: create and quote an agreement, persist and broadcast funding and assignment transactions, attest both escrow changes, authorize the assigned provider, and persist a content-addressed evidence submission. It is implemented through REST, PostgreSQL, viem, the native-asset `JobEscrow` contract, and a production adapter for the current 0G Storage SDK. The automated API flow uses an explicitly labelled storage test adapter because no live 0G credentials are available; a 0G testnet deployment, live Storage upload, verification, Compute, settlement orchestration, ERC-8004 writes, MCP, and the operator UI remain in progress and are not simulated.
+The repository is under active development. The real local EVM vertical flow currently reaches `PASSED`: create and quote an agreement, persist and attest funding and assignment transactions, authorize the assigned provider, store content-addressed submission evidence, retrieve and verify its commitment, execute explicit deterministic checks, and store an auditable verification report. It is implemented through REST, PostgreSQL, viem, `JobEscrow`, `OutcomeRegistry`, and a production adapter for the current 0G Storage SDK. The automated API flow uses an explicitly labelled storage test adapter because no live 0G credentials are available. `OutcomeRegistry` is exercised through real local transactions but is not yet wired into REST settlement. A 0G testnet deployment, live Storage upload, Compute, settlement/refund orchestration, ERC-8004 writes, MCP, and the operator UI remain in progress and are not simulated.
 
 ```mermaid
 flowchart LR
@@ -12,7 +12,8 @@ flowchart LR
   DB --> Events[Immutable state events]
   Domain --> Chain[Fund + assign / local EVM verified]
   Domain --> Storage[0G Storage evidence adapter]
-  Domain -. planned .-> Compute[0G Compute verification]
+  Storage --> Verify[Deterministic evidence verification]
+  Verify -. when required .-> Compute[0G Compute rubric signal]
   Chain -. planned .-> Receipt[Portable receipt + ERC-8004 reputation]
 ```
 
@@ -59,9 +60,9 @@ forge test --root packages/contracts -vvv
 ## Repository map
 
 - `apps/api` -- Fastify transport and authentication boundary
-- `packages/contracts` -- native-asset job escrow and Foundry security tests
-- `packages/chain` -- viem transaction preparation, broadcast, confirmation, and state attestation
-- `packages/domain` -- canonical agreement, state machine, commitments, money conversion, and application service
+- `packages/contracts` -- native-asset escrow, outcome commitments, and Foundry security tests
+- `packages/chain` -- viem escrow/outcome transaction preparation, broadcast, confirmation, and state attestation
+- `packages/domain` -- canonical agreements, state machine, commitments, deterministic verification, and application services
 - `packages/db` -- Drizzle schema, migrations, and PostgreSQL repository adapter
 - `packages/config` -- strict environment validation
 - `packages/storage` -- 0G Storage upload, proof retrieval, and byte-integrity adapter

@@ -33,7 +33,7 @@ const fundedJob: Job = {
     deadline: '2030-08-23T16:00:00.000Z',
     deliverable: { type: 'code', format: 'git_patch' },
     verification: {
-      mode: 'deterministic_plus_ai',
+      mode: 'ai',
       minimumScore: 0.9,
       requirements: ['All hidden tests must pass'],
     },

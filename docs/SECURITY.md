@@ -20,6 +20,9 @@
 - A PostgreSQL session advisory lock spans funding, assignment, and Storage operations. Repository transaction locks and cross-operation active checks prevent another instance or a post-restart request from consuming the shared signer nonce while work is unresolved.
 - The temporary provider credential is distinct from the operator credential and can submit only for its exact configured agent identity; operators cannot impersonate an assigned provider through the submission endpoint.
 - Submission manifests are size-bounded, committed before upload, proof-downloaded, and byte-compared before the job reaches `SUBMITTED`. Confirmed operation payloads are cleared from PostgreSQL.
+- Deterministic checks are frozen in the hashed agreement, use exact JSON semantics and integer scoring, and cannot be synthesized from mutable prose after funding.
+- Verification rechecks the submission hash and job/provider/agreement bindings before evaluation. The report is hash-checked across recovery, stored as evidence, and cleared from the operation row after confirmation.
+- `OutcomeRegistry` requires a separate writer role, rejects zero commitments and non-final outcomes, and prevents duplicate finalization.
 
 ## Not yet implemented
 

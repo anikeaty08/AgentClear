@@ -10,6 +10,7 @@ import {
   PostgresEscrowRepository,
   PostgresJobRepository,
   PostgresSubmissionRepository,
+  PostgresVerificationRepository,
 } from '@agentclear/db';
 import {
   AssignmentService,
@@ -17,6 +18,8 @@ import {
   JobService,
   SubmissionQueryService,
   SubmissionService,
+  VerificationQueryService,
+  VerificationService,
 } from '@agentclear/domain';
 import { ZeroGStorageClient } from '@agentclear/storage';
 
@@ -75,6 +78,7 @@ const storage =
         maxPayloadBytes: config.storage.maxPayloadBytes,
       });
 const submissionRepository = new PostgresSubmissionRepository(database.db);
+const verificationRepository = new PostgresVerificationRepository(database.db);
 const submissionService =
   config.storage === undefined || storage === undefined
     ? undefined
@@ -83,6 +87,17 @@ const submissionService =
         submissionRepository,
         storage,
         maxPayloadBytes: config.storage.maxPayloadBytes,
+        executor: chainWriteExecutor,
+      });
+const verificationService =
+  config.storage === undefined || storage === undefined
+    ? undefined
+    : new VerificationService({
+        jobRepository,
+        submissionRepository,
+        verificationRepository,
+        storage,
+        maxReportBytes: config.storage.maxPayloadBytes,
         executor: chainWriteExecutor,
       });
 const authenticators = [
@@ -110,9 +125,11 @@ const app = await buildApp({
   jobRepository,
   authenticator,
   submissionQueryService: new SubmissionQueryService(jobRepository, submissionRepository),
+  verificationQueryService: new VerificationQueryService(jobRepository, verificationRepository),
   ...(fundingService === undefined ? {} : { fundingService }),
   ...(assignmentService === undefined ? {} : { assignmentService }),
   ...(submissionService === undefined ? {} : { submissionService }),
+  ...(verificationService === undefined ? {} : { verificationService }),
   ...(chain === undefined ? {} : { chainHealth: async () => chain.health() }),
   ...(storage === undefined ? {} : { storageHealth: async () => storage.health() }),
   logger: {

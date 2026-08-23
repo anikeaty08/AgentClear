@@ -11,6 +11,7 @@ import {
   PostgresEscrowRepository,
   PostgresJobRepository,
   PostgresSubmissionRepository,
+  PostgresVerificationRepository,
 } from '@agentclear/db';
 import {
   AssignmentService,
@@ -19,7 +20,9 @@ import {
   JobService,
   SubmissionQueryService,
   SubmissionService,
-  type EvidenceStorage,
+  VerificationQueryService,
+  VerificationService,
+  type EvidenceStore,
 } from '@agentclear/domain';
 import { sql } from 'drizzle-orm';
 import {
@@ -108,18 +111,27 @@ function createRandomSigner(): PrivateKeyAccount {
   throw new Error('Could not generate a valid integration-test signer.');
 }
 
-class IntegrationEvidenceStorage implements EvidenceStorage {
+class IntegrationEvidenceStorage implements EvidenceStore {
   public calls = 0;
+  readonly #objects = new Map<string, Uint8Array>();
 
   public async uploadVerified(data: Uint8Array) {
     this.calls += 1;
+    const rootHash = `0x${(this.calls === 1 ? 'd' : 'f').repeat(64)}` as `0x${string}`;
+    this.#objects.set(rootHash, new Uint8Array(data));
     return {
-      rootHash: `0x${'d'.repeat(64)}` as const,
+      rootHash,
       transactionHash: `0x${'e'.repeat(64)}` as const,
-      transactionSequence: 11,
+      transactionSequence: 10 + this.calls,
       sizeBytes: data.byteLength,
       verified: true as const,
     };
+  }
+
+  public async downloadVerified(rootHash: string): Promise<Uint8Array> {
+    const stored = this.#objects.get(rootHash);
+    if (stored === undefined) throw new Error('Test evidence root was not found.');
+    return new Uint8Array(stored);
   }
 }
 
@@ -195,6 +207,7 @@ describe.skipIf(databaseUrl === undefined)('AgentClear funding API with PostgreS
 
     const jobRepository = new PostgresJobRepository(database.db);
     const submissionRepository = new PostgresSubmissionRepository(database.db);
+    const verificationRepository = new PostgresVerificationRepository(database.db);
     gateway = new ViemJobEscrowGateway({ rpcUrl, chain, contractAddress, account: signer });
     const chainWriteExecutor = new InMemoryExclusiveExecutor();
     app = await buildApp({
@@ -204,11 +217,23 @@ describe.skipIf(databaseUrl === undefined)('AgentClear funding API with PostgreS
         jobRepository,
         submissionRepository,
       ),
+      verificationQueryService: new VerificationQueryService(
+        jobRepository,
+        verificationRepository,
+      ),
       submissionService: new SubmissionService({
         jobRepository,
         submissionRepository,
         storage: evidenceStorage,
         maxPayloadBytes: 262_144,
+        executor: chainWriteExecutor,
+      }),
+      verificationService: new VerificationService({
+        jobRepository,
+        submissionRepository,
+        verificationRepository,
+        storage: evidenceStorage,
+        maxReportBytes: 262_144,
         executor: chainWriteExecutor,
       }),
       fundingService: new FundingService({
@@ -244,7 +269,7 @@ describe.skipIf(databaseUrl === undefined)('AgentClear funding API with PostgreS
 
   beforeEach(async () => {
     await database.db.execute(
-      sql`truncate table submission_artifacts, submissions, submission_operations, job_assignment_operations, job_assignments, escrow_funding_operations, escrows, idempotency_records, job_state_events, job_requirements, jobs`,
+      sql`truncate table verification_reports, verification_checks, verification_runs, verification_operations, submission_artifacts, submissions, submission_operations, job_assignment_operations, job_assignments, escrow_funding_operations, escrows, idempotency_records, job_state_events, job_requirements, jobs`,
     );
   });
 
@@ -254,7 +279,7 @@ describe.skipIf(databaseUrl === undefined)('AgentClear funding API with PostgreS
     if (anvil !== undefined && anvil.exitCode === null) anvil.kill();
   });
 
-  it('creates, funds, assigns, and stores a provider submission through the real boundaries', async () => {
+  it('creates, funds, assigns, submits, and deterministically verifies through local boundaries', async () => {
     const authorization = `Bearer ${apiKey}`;
     const created = await app.inject({
       method: 'POST',
@@ -270,7 +295,27 @@ describe.skipIf(databaseUrl === undefined)('AgentClear funding API with PostgreS
         verification: {
           mode: 'deterministic',
           minimumScore: 1,
-          requirements: ['All supplied tests pass'],
+          requirements: ['Submission must report twelve passing tests and zero failures.'],
+          deterministicChecks: [
+            {
+              id: 'passed-tests',
+              kind: 'json_path_equals',
+              description: 'All twelve expected tests passed.',
+              path: ['tests', 'passed'],
+              expected: 12,
+              weightBps: 7000,
+              hardFailure: true,
+            },
+            {
+              id: 'failed-tests',
+              kind: 'json_path_equals',
+              description: 'No tests failed.',
+              path: ['tests', 'failed'],
+              expected: 0,
+              weightBps: 3000,
+              hardFailure: true,
+            },
+          ],
         },
         refundPolicy: { onExpiry: true, onFinalFailure: true },
       },
@@ -414,12 +459,45 @@ describe.skipIf(databaseUrl === undefined)('AgentClear funding API with PostgreS
     expect(evidenceStorage.calls).toBe(1);
     expect(listed.json().data.submissions).toHaveLength(1);
 
+    const verificationKey = randomUUID();
+    const verified = await app.inject({
+      method: 'POST',
+      url: `/v1/jobs/${jobId}/verify`,
+      headers: { authorization, 'idempotency-key': verificationKey },
+      payload: {},
+    });
+    const verificationReplay = await app.inject({
+      method: 'POST',
+      url: `/v1/jobs/${jobId}/verify`,
+      headers: { authorization, 'idempotency-key': verificationKey },
+      payload: {},
+    });
+    const verifications = await app.inject({
+      method: 'GET',
+      url: `/v1/jobs/${jobId}/verifications`,
+      headers: { authorization },
+    });
+    expect(verified.statusCode).toBe(200);
+    expect(verified.json().data.job.state).toBe('PASSED');
+    expect(verified.json().data.verification).toMatchObject({
+      outcome: 'PASS',
+      scoreBps: 10_000,
+      reportStorageRootHash: `0x${'f'.repeat(64)}`,
+    });
+    expect(verificationReplay.headers['idempotency-replayed']).toBe('true');
+    expect(verifications.json().data.verifications).toHaveLength(1);
+    expect(evidenceStorage.calls).toBe(2);
+
     const persisted = await database.db.execute<{
       state: string;
       events: string;
       submissions: string;
       artifacts: string;
       payload: string | null;
+      verificationRuns: string;
+      verificationChecks: string;
+      verificationReports: string;
+      reportPayload: string | null;
     }>(sql`
       select
         (select state::text from jobs where id = ${jobId}) as state,
@@ -428,14 +506,26 @@ describe.skipIf(databaseUrl === undefined)('AgentClear funding API with PostgreS
         (select count(*)::text from submission_artifacts where submission_id in (
           select id from submissions where job_id = ${jobId}
         )) as artifacts,
-        (select canonical_payload from submission_operations where job_id = ${jobId}) as payload
+        (select canonical_payload from submission_operations where job_id = ${jobId}) as payload,
+        (select count(*)::text from verification_runs where job_id = ${jobId}) as "verificationRuns",
+        (select count(*)::text from verification_checks where run_id in (
+          select id from verification_runs where job_id = ${jobId}
+        )) as "verificationChecks",
+        (select count(*)::text from verification_reports where run_id in (
+          select id from verification_runs where job_id = ${jobId}
+        )) as "verificationReports",
+        (select canonical_report from verification_operations where job_id = ${jobId}) as "reportPayload"
     `);
     expect(persisted.rows[0]).toEqual({
-      state: 'SUBMITTED',
-      events: '7',
+      state: 'PASSED',
+      events: '9',
       submissions: '1',
       artifacts: '1',
       payload: null,
+      verificationRuns: '1',
+      verificationChecks: '2',
+      verificationReports: '1',
+      reportPayload: null,
     });
   });
 });

@@ -5,3 +5,4 @@ export * from './exclusive-executor.js';
 export * from './job-repository.js';
 export * from './schema.js';
 export * from './submission-repository.js';
+export * from './verification-repository.js';

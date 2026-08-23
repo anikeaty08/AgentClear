@@ -103,7 +103,7 @@ describe.skipIf(databaseUrl === undefined)('PostgresAssignmentRepository', () =>
 
   beforeEach(async () => {
     await client.db.execute(
-      sql`truncate table submission_artifacts, submissions, submission_operations, job_assignment_operations, job_assignments, escrow_funding_operations, escrows, idempotency_records, job_state_events, job_requirements, jobs`,
+      sql`truncate table verification_reports, verification_checks, verification_runs, verification_operations, submission_artifacts, submissions, submission_operations, job_assignment_operations, job_assignments, escrow_funding_operations, escrows, idempotency_records, job_state_events, job_requirements, jobs`,
     );
   });
 
@@ -122,7 +122,7 @@ describe.skipIf(databaseUrl === undefined)('PostgresAssignmentRepository', () =>
         deadline: '2030-08-23T16:00:00.000Z',
         deliverable: { type: 'code', format: 'git_patch' },
         verification: {
-          mode: 'deterministic',
+          mode: 'ai',
           minimumScore: 1,
           requirements: ['All supplied tests pass'],
         },

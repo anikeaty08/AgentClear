@@ -4,8 +4,9 @@ import {
   createDatabaseClient,
   PostgresJobRepository,
   PostgresSubmissionRepository,
+  PostgresVerificationRepository,
 } from '@agentclear/db';
-import { JobService, SubmissionQueryService } from '@agentclear/domain';
+import { JobService, SubmissionQueryService, VerificationQueryService } from '@agentclear/domain';
 import { sql } from 'drizzle-orm';
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 
@@ -19,16 +20,18 @@ describe.skipIf(databaseUrl === undefined)('AgentClear API with PostgreSQL', () 
   const repository = new PostgresJobRepository(database.db);
   const apiKey = 'integration-api-key-with-at-least-32-chars';
   const submissionRepository = new PostgresSubmissionRepository(database.db);
+  const verificationRepository = new PostgresVerificationRepository(database.db);
   const appPromise = buildApp({
     jobRepository: repository,
     jobService: new JobService({ repository }),
     submissionQueryService: new SubmissionQueryService(repository, submissionRepository),
+    verificationQueryService: new VerificationQueryService(repository, verificationRepository),
     authenticator: new BootstrapApiKeyAuthenticator(apiKey, 'integration-pepper-with-at-least-32-chars', 'operator_it'),
   });
 
   beforeEach(async () => {
     await database.db.execute(
-      sql`truncate table submission_artifacts, submissions, submission_operations, job_assignment_operations, job_assignments, escrow_funding_operations, escrows, idempotency_records, job_state_events, job_requirements, jobs`,
+      sql`truncate table verification_reports, verification_checks, verification_runs, verification_operations, submission_artifacts, submissions, submission_operations, job_assignment_operations, job_assignments, escrow_funding_operations, escrows, idempotency_records, job_state_events, job_requirements, jobs`,
     );
   });
 
@@ -52,7 +55,7 @@ describe.skipIf(databaseUrl === undefined)('AgentClear API with PostgreSQL', () 
       deadline: '2030-08-23T16:00:00.000Z',
       deliverable: { type: 'code', format: 'git_patch' },
       verification: {
-        mode: 'deterministic_plus_ai',
+        mode: 'ai',
         minimumScore: 0.9,
         requirements: ['All hidden tests must pass'],
       },

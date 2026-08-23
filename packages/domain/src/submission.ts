@@ -21,6 +21,25 @@ export const submitResultInputSchema = z
   .strict();
 
 export type SubmitResultInput = z.infer<typeof submitResultInputSchema>;
+export const submissionManifestSchema = z
+  .object({
+    version: z.literal('1'),
+    submissionId: z.uuid(),
+    jobId: z.uuid(),
+    agreementHash: z.string().regex(/^0x[0-9a-fA-F]{64}$/),
+    providerAgentId: z.string().regex(/^erc8004:\d+:\d+$/),
+    deliverable: z
+      .object({
+        type: z.enum(['code', 'data', 'research', 'content', 'other']),
+        format: z.string().min(1).max(100),
+        contentType: z.literal('application/json'),
+        result: z.json(),
+      })
+      .strict(),
+    submittedAt: z.iso.datetime({ offset: true }),
+  })
+  .strict();
+export type SubmissionManifest = z.infer<typeof submissionManifestSchema>;
 export type SubmissionOperationStatus = 'CREATED' | 'STORING' | 'CONFIRMED';
 
 export type EvidenceStorageResult = {
@@ -34,6 +53,12 @@ export type EvidenceStorageResult = {
 export interface EvidenceStorage {
   uploadVerified(data: Uint8Array): Promise<EvidenceStorageResult>;
 }
+
+export interface EvidenceReader {
+  downloadVerified(rootHash: string): Promise<Uint8Array>;
+}
+
+export interface EvidenceStore extends EvidenceStorage, EvidenceReader {}
 
 export type SubmissionOperation = {
   id: string;

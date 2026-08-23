@@ -1,4 +1,10 @@
-import type { JobAgreement, JobState } from '@agentclear/domain';
+import type {
+  JobAgreement,
+  JobState,
+  JsonValue,
+  VerificationCheckResult,
+  VerificationOutcome,
+} from '@agentclear/domain';
 import { JOB_STATES } from '@agentclear/domain';
 import { sql } from 'drizzle-orm';
 import {
@@ -46,6 +52,17 @@ export const submissionOperationStatusEnum = pgEnum('submission_operation_status
   'CREATED',
   'STORING',
   'CONFIRMED',
+]);
+export const verificationOperationStatusEnum = pgEnum('verification_operation_status', [
+  'CREATED',
+  'EVALUATED',
+  'STORING',
+  'CONFIRMED',
+]);
+export const verificationOutcomeEnum = pgEnum('verification_outcome', [
+  'PASS',
+  'FAIL',
+  'NEEDS_REVIEW',
 ]);
 
 export const jobs = pgTable(
@@ -310,6 +327,102 @@ export const submissionArtifacts = pgTable('submission_artifacts', {
   createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull(),
 });
 
+export const verificationOperations = pgTable(
+  'verification_operations',
+  {
+    id: uuid('id').primaryKey(),
+    runId: uuid('run_id').notNull().unique(),
+    jobId: uuid('job_id')
+      .notNull()
+      .references(() => jobs.id, { onDelete: 'restrict' }),
+    submissionId: uuid('submission_id')
+      .notNull()
+      .references(() => submissions.id, { onDelete: 'restrict' }),
+    status: verificationOperationStatusEnum('status').notNull(),
+    startedAt: timestamp('started_at', { withTimezone: true, mode: 'date' }).notNull(),
+    canonicalReport: text('canonical_report'),
+    reportHash: varchar('report_hash', { length: 66 }),
+    outcome: verificationOutcomeEnum('outcome').$type<VerificationOutcome>(),
+    scoreBps: smallint('score_bps'),
+    reportStorageRootHash: varchar('report_storage_root_hash', { length: 66 }),
+    reportStorageTransactionHash: varchar('report_storage_transaction_hash', { length: 66 }),
+    reportStorageTransactionSequence: bigint('report_storage_transaction_sequence', {
+      mode: 'number',
+    }),
+    reportSizeBytes: integer('report_size_bytes'),
+    idempotencyScope: varchar('idempotency_scope', { length: 255 }).notNull(),
+    idempotencyKey: varchar('idempotency_key', { length: 255 }).notNull(),
+    requestHash: varchar('request_hash', { length: 66 }).notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull(),
+  },
+  (table) => [
+    unique('verification_operations_idempotency_unique').on(
+      table.idempotencyScope,
+      table.idempotencyKey,
+    ),
+    uniqueIndex('verification_operations_active_job_unique')
+      .on(table.jobId)
+      .where(sql`${table.status} in ('CREATED', 'EVALUATED', 'STORING')`),
+    index('verification_operations_status_updated_at_idx').on(table.status, table.updatedAt),
+  ],
+);
+
+export const verificationRuns = pgTable(
+  'verification_runs',
+  {
+    id: uuid('id').primaryKey(),
+    jobId: uuid('job_id')
+      .notNull()
+      .references(() => jobs.id, { onDelete: 'restrict' }),
+    submissionId: uuid('submission_id')
+      .notNull()
+      .references(() => submissions.id, { onDelete: 'restrict' }),
+    mode: varchar('mode', { length: 40 }).notNull(),
+    outcome: verificationOutcomeEnum('outcome').$type<VerificationOutcome>().notNull(),
+    scoreBps: smallint('score_bps').notNull(),
+    minimumScoreBps: smallint('minimum_score_bps').notNull(),
+    verifierVersion: varchar('verifier_version', { length: 100 }).notNull(),
+    startedAt: timestamp('started_at', { withTimezone: true, mode: 'date' }).notNull(),
+    completedAt: timestamp('completed_at', { withTimezone: true, mode: 'date' }).notNull(),
+  },
+  (table) => [index('verification_runs_job_completed_at_idx').on(table.jobId, table.completedAt)],
+);
+
+export const verificationChecks = pgTable(
+  'verification_checks',
+  {
+    runId: uuid('run_id')
+      .notNull()
+      .references(() => verificationRuns.id, { onDelete: 'restrict' }),
+    checkId: varchar('check_id', { length: 100 }).notNull(),
+    kind: varchar('kind', { length: 40 }).$type<VerificationCheckResult['kind']>().notNull(),
+    description: text('description').notNull(),
+    path: jsonb('path').$type<readonly (number | string)[]>().notNull(),
+    weightBps: smallint('weight_bps').notNull(),
+    hardFailure: boolean('hard_failure').notNull(),
+    passed: boolean('passed').notNull(),
+    expected: jsonb('expected').$type<JsonValue>(),
+    actual: jsonb('actual').$type<JsonValue>(),
+    expectedPresent: boolean('expected_present').notNull(),
+    actualPresent: boolean('actual_present').notNull(),
+    message: text('message').notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.runId, table.checkId] })],
+);
+
+export const verificationReports = pgTable('verification_reports', {
+  runId: uuid('run_id')
+    .primaryKey()
+    .references(() => verificationRuns.id, { onDelete: 'restrict' }),
+  reportHash: varchar('report_hash', { length: 66 }).notNull(),
+  storageRootHash: varchar('storage_root_hash', { length: 66 }).notNull(),
+  storageTransactionHash: varchar('storage_transaction_hash', { length: 66 }),
+  storageTransactionSequence: bigint('storage_transaction_sequence', { mode: 'number' }).notNull(),
+  sizeBytes: integer('size_bytes').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull(),
+});
+
 export const databaseSchema = {
   jobs,
   jobRequirements,
@@ -322,4 +435,8 @@ export const databaseSchema = {
   submissionOperations,
   submissions,
   submissionArtifacts,
+  verificationOperations,
+  verificationRuns,
+  verificationChecks,
+  verificationReports,
 };

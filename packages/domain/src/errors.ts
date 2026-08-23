@@ -12,7 +12,10 @@ export type DomainErrorCode =
   | 'PROVIDER_NOT_AUTHORIZED'
   | 'SUBMISSION_IN_PROGRESS'
   | 'SUBMISSION_TOO_LARGE'
-  | 'STORAGE_OPERATION_FAILED';
+  | 'STORAGE_OPERATION_FAILED'
+  | 'VERIFICATION_IN_PROGRESS'
+  | 'VERIFICATION_POLICY_UNSUPPORTED'
+  | 'EVIDENCE_INTEGRITY_FAILED';
 
 export class DomainError extends Error {
   public constructor(
@@ -148,6 +151,36 @@ export class StorageOperationFailedError extends DomainError {
     super(
       'STORAGE_OPERATION_FAILED',
       'The evidence was not durably verified in 0G Storage. Retry with the same idempotency key.',
+      502,
+    );
+  }
+}
+
+export class VerificationInProgressError extends DomainError {
+  public constructor(jobId: string) {
+    super(
+      'VERIFICATION_IN_PROGRESS',
+      `Job ${jobId} already has a verification operation in progress.`,
+      409,
+    );
+  }
+}
+
+export class VerificationPolicyUnsupportedError extends DomainError {
+  public constructor() {
+    super(
+      'VERIFICATION_POLICY_UNSUPPORTED',
+      'This agreement does not contain an executable deterministic verification policy.',
+      422,
+    );
+  }
+}
+
+export class EvidenceIntegrityFailedError extends DomainError {
+  public constructor() {
+    super(
+      'EVIDENCE_INTEGRITY_FAILED',
+      'Stored evidence did not match the committed submission metadata.',
       502,
     );
   }

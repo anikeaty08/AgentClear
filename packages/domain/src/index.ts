@@ -9,3 +9,4 @@ export * from './job-service.js';
 export * from './job-state.js';
 export * from './money.js';
 export * from './submission.js';
+export * from './verification.js';

@@ -3,7 +3,9 @@ import {
   InvalidJobTransitionError,
   JobService,
   SubmissionQueryService,
+  VerificationQueryService,
   type SubmissionRepository,
+  type VerificationRepository,
   type CreateJobPersistenceInput,
   type CreateJobPersistenceResult,
   type Job,
@@ -79,6 +81,7 @@ const authenticator: Authenticator = {
             'jobs:fund',
             'jobs:assign',
             'jobs:submit',
+            'jobs:verify',
           ]),
         }
       : null;
@@ -93,7 +96,7 @@ const validJob = {
   deadline: '2030-08-23T16:00:00.000Z',
   deliverable: { type: 'code', format: 'git_patch' },
   verification: {
-    mode: 'deterministic_plus_ai',
+    mode: 'ai',
     minimumScore: 0.9,
     requirements: ['All hidden tests must pass'],
   },
@@ -109,6 +112,11 @@ async function createTestApp() {
       return [];
     },
   } as unknown as SubmissionRepository;
+  const verificationRepository = {
+    async listByJob() {
+      return [];
+    },
+  } as unknown as VerificationRepository;
   const app = await buildApp({
     jobRepository: repository,
     jobService: new JobService({
@@ -116,6 +124,7 @@ async function createTestApp() {
       clock: () => new Date('2026-08-23T00:00:00.000Z'),
     }),
     submissionQueryService: new SubmissionQueryService(repository, submissionRepository),
+    verificationQueryService: new VerificationQueryService(repository, verificationRepository),
     authenticator,
   });
   apps.push(app);
@@ -259,6 +268,22 @@ describe('AgentClear API', () => {
         'idempotency-key': 'submit-job-disabled-001',
       },
       payload: { result: { answer: 42 } },
+    });
+
+    expect(response.statusCode).toBe(503);
+    expect(response.json().error.code).toBe('STORAGE_UNAVAILABLE');
+  });
+
+  it('rejects verification before mutation when the evidence store is not configured', async () => {
+    const app = await createTestApp();
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/jobs/0198d462-75c0-7000-8000-000000000001/verify',
+      headers: {
+        authorization: 'Bearer valid-test-api-key',
+        'idempotency-key': 'verify-job-disabled-001',
+      },
+      payload: {},
     });
 
     expect(response.statusCode).toBe(503);

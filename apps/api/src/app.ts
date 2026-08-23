@@ -8,6 +8,8 @@ import type {
   JobService,
   SubmissionQueryService,
   SubmissionService,
+  VerificationQueryService,
+  VerificationService,
 } from '@agentclear/domain';
 import { DomainError } from '@agentclear/domain';
 import Fastify, { LogController, type FastifyRequest, type FastifyServerOptions } from 'fastify';
@@ -56,6 +58,8 @@ export type BuildAppOptions = {
   assignmentService?: AssignmentService;
   submissionService?: SubmissionService;
   submissionQueryService: SubmissionQueryService;
+  verificationService?: VerificationService;
+  verificationQueryService: VerificationQueryService;
   chainHealth?: () => Promise<unknown>;
   storageHealth?: () => Promise<unknown>;
   logger?: FastifyServerOptions['logger'];
@@ -287,6 +291,36 @@ export async function buildApp(options: BuildAppOptions) {
     const { id } = jobIdParamsSchema.parse(request.params);
     const submissions = await options.submissionQueryService.listSubmissions(id);
     return { data: { submissions }, meta: { requestId: request.id } };
+  });
+
+  app.post('/v1/jobs/:id/verify', async (request, reply) => {
+    const principal = requireScope(request, 'jobs:verify');
+    const idempotencyKey = idempotencyKeySchema.parse(request.headers['idempotency-key']);
+    const { id } = jobIdParamsSchema.parse(request.params);
+    if (options.verificationService === undefined) {
+      throw new ApiError(
+        'STORAGE_UNAVAILABLE',
+        'Verification is disabled because the evidence store is not configured.',
+        503,
+      );
+    }
+    const result = await options.verificationService.verifyResult(id, request.body, {
+      actor: { type: principal.kind === 'agent' ? 'agent' : 'operator', id: principal.id },
+      idempotencyKey,
+    });
+    return reply
+      .header('idempotency-replayed', result.replayed ? 'true' : 'false')
+      .send({
+        data: { job: result.job, verification: result.verification },
+        meta: { requestId: request.id, replayed: result.replayed },
+      });
+  });
+
+  app.get('/v1/jobs/:id/verifications', async (request) => {
+    requireScope(request, 'jobs:read');
+    const { id } = jobIdParamsSchema.parse(request.params);
+    const verifications = await options.verificationQueryService.listVerifications(id);
+    return { data: { verifications }, meta: { requestId: request.id } };
   });
 
   return app;

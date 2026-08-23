@@ -23,6 +23,7 @@ import {
   jobs,
   jobStateEvents,
   submissionOperations,
+  verificationOperations,
 } from './schema.js';
 
 function rowToAssignmentOperation(
@@ -183,10 +184,18 @@ export class PostgresAssignmentRepository implements AssignmentRepository {
         .from(submissionOperations)
         .where(inArray(submissionOperations.status, ['CREATED', 'STORING']))
         .limit(1);
+      const [activeVerification] = await transaction
+        .select({ id: verificationOperations.id })
+        .from(verificationOperations)
+        .where(
+          inArray(verificationOperations.status, ['CREATED', 'EVALUATED', 'STORING']),
+        )
+        .limit(1);
       if (
         activeFunding !== undefined
         || otherAssignment !== undefined
         || activeSubmission !== undefined
+        || activeVerification !== undefined
       ) {
         throw new ChainSignerBusyError();
       }

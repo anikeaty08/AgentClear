@@ -33,9 +33,20 @@ Mutating routes require an `Idempotency-Key` containing 8-255 ASCII letters, dig
     "format": "git_patch"
   },
   "verification": {
-    "mode": "deterministic_plus_ai",
-    "minimumScore": 0.9,
-    "requirements": ["All hidden tests must pass"]
+    "mode": "deterministic",
+    "minimumScore": 1,
+    "requirements": ["Submission reports twelve passing tests and zero failures."],
+    "deterministicChecks": [
+      {
+        "id": "tests-passed",
+        "kind": "json_path_equals",
+        "description": "All expected tests passed.",
+        "path": ["tests", "passed"],
+        "expected": 12,
+        "weightBps": 10000,
+        "hardFailure": true
+      }
+    ]
   },
   "refundPolicy": {
     "onExpiry": true,
@@ -94,6 +105,16 @@ The operator bootstrap key cannot submit on behalf of a provider. The temporary 
 
 `GET /v1/jobs/:id/submissions` requires `jobs:read` and returns confirmed submission/artifact metadata without returning the persisted evidence payload.
 
+## Verify a result
+
+`POST /v1/jobs/:id/verify` requires `jobs:verify`, an idempotency key, an empty object body, and configured evidence storage. Deterministic modes must define explicit `deterministicChecks` in the agreement; prose requirements are never interpreted as executable rules after funding.
+
+Supported checks are `json_path_exists`, `json_path_equals`, and `json_type`. Paths are arrays of object keys and array indices. Weights use integer basis points and are normalized to a 0-10,000 score. Any failed check marked `hardFailure` forces `FAIL`. A pure deterministic job passes only when its score reaches `minimumScore`. `deterministic_plus_ai` can fail immediately on a hard deterministic failure, but otherwise returns `NEEDS_REVIEW` until the real Compute signal exists.
+
+Verification proof-downloads the submission, checks its SHA-256 commitment and manifest identities, records `SUBMITTED -> VERIFYING`, evaluates the frozen agreement policy, persists the exact canonical report before upload, proof-stores that report, then records `PASSED`, `FAILED`, or `NEEDS_REVIEW`. Retrying with the same key resumes the same report. Confirmed operation payloads are cleared.
+
+`GET /v1/jobs/:id/verifications` requires `jobs:read` and returns score, outcome, individual check results, verifier version, report commitment, and Storage metadata.
+
 ## Get a job
 
 `GET /v1/jobs/:id` requires `jobs:read` and returns the stored canonical agreement, current provider identity when assigned, agreement hash, internal base-unit budget, state, version, and timestamps.
@@ -110,4 +131,4 @@ The operator bootstrap key cannot submit on behalf of a provider. The temporary 
 }
 ```
 
-Stable codes currently include `AUTHENTICATION_REQUIRED`, `INSUFFICIENT_SCOPE`, `INVALID_REQUEST`, `RATE_LIMIT_EXCEEDED`, `JOB_NOT_FOUND`, `JOB_DEADLINE_NOT_FUTURE`, `INVALID_JOB_TRANSITION`, `IDEMPOTENCY_KEY_REUSED`, `CHAIN_UNAVAILABLE`, `CHAIN_OPERATION_FAILED`, `CHAIN_SIGNER_BUSY`, `JOB_FUNDING_IN_PROGRESS`, `JOB_ASSIGNMENT_IN_PROGRESS`, `PROVIDER_MISMATCH`, `PROVIDER_NOT_AUTHORIZED`, `SUBMISSION_IN_PROGRESS`, `SUBMISSION_TOO_LARGE`, `STORAGE_UNAVAILABLE`, `STORAGE_OPERATION_FAILED`, `SPENDING_POLICY_EXCEEDED`, and `INTERNAL_ERROR`.
+Stable codes currently include `AUTHENTICATION_REQUIRED`, `INSUFFICIENT_SCOPE`, `INVALID_REQUEST`, `RATE_LIMIT_EXCEEDED`, `JOB_NOT_FOUND`, `JOB_DEADLINE_NOT_FUTURE`, `INVALID_JOB_TRANSITION`, `IDEMPOTENCY_KEY_REUSED`, `CHAIN_UNAVAILABLE`, `CHAIN_OPERATION_FAILED`, `CHAIN_SIGNER_BUSY`, `JOB_FUNDING_IN_PROGRESS`, `JOB_ASSIGNMENT_IN_PROGRESS`, `PROVIDER_MISMATCH`, `PROVIDER_NOT_AUTHORIZED`, `SUBMISSION_IN_PROGRESS`, `SUBMISSION_TOO_LARGE`, `VERIFICATION_IN_PROGRESS`, `VERIFICATION_POLICY_UNSUPPORTED`, `EVIDENCE_INTEGRITY_FAILED`, `STORAGE_UNAVAILABLE`, `STORAGE_OPERATION_FAILED`, `SPENDING_POLICY_EXCEEDED`, and `INTERNAL_ERROR`.

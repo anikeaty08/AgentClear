@@ -21,7 +21,12 @@ import {
 import { privateKeyToAccount, type PrivateKeyAccount } from 'viem/accounts';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { ESCROW_STATE, ViemJobEscrowGateway } from '../src/index.js';
+import {
+  agentIdentityToHash,
+  ESCROW_STATE,
+  ViemJobEscrowGateway,
+  ViemOutcomeRegistryGateway,
+} from '../src/index.js';
 
 type JobEscrowArtifact = {
   abi: Abi;
@@ -31,6 +36,10 @@ type JobEscrowArtifact = {
 const chainId = 31_337;
 const artifactUrl = new URL(
   '../../contracts/out/JobEscrow.sol/JobEscrow.json',
+  import.meta.url,
+);
+const outcomeArtifactUrl = new URL(
+  '../../contracts/out/OutcomeRegistry.sol/OutcomeRegistry.json',
   import.meta.url,
 );
 
@@ -67,8 +76,8 @@ async function waitForRpc(url: string, child: ChildProcess): Promise<void> {
   throw new Error('Anvil did not become ready before the integration-test timeout.');
 }
 
-async function readArtifact(): Promise<JobEscrowArtifact> {
-  const parsed: unknown = JSON.parse(await readFile(artifactUrl, 'utf8'));
+async function readArtifact(url = artifactUrl): Promise<JobEscrowArtifact> {
+  const parsed: unknown = JSON.parse(await readFile(url, 'utf8'));
   if (
     typeof parsed !== 'object'
     || parsed === null
@@ -80,7 +89,7 @@ async function readArtifact(): Promise<JobEscrowArtifact> {
     || typeof parsed.bytecode.object !== 'string'
     || !parsed.bytecode.object.startsWith('0x')
   ) {
-    throw new Error('The compiled JobEscrow artifact is invalid.');
+    throw new Error('The compiled contract artifact is invalid.');
   }
   return parsed as JobEscrowArtifact;
 }
@@ -211,5 +220,55 @@ describe('ViemJobEscrowGateway against Anvil', () => {
     const assignedEscrow = await gateway.getEscrow(jobId);
     expect(assignedEscrow.provider).toBe(getAddress(provider) as Address);
     expect(assignedEscrow.state).toBe(ESCROW_STATE.FUNDED);
+
+    const outcomeArtifact = await readArtifact(outcomeArtifactUrl);
+    const outcomeDeploymentHash = await walletClient.deployContract({
+      account: buyer,
+      abi: outcomeArtifact.abi,
+      bytecode: outcomeArtifact.bytecode.object,
+      args: [buyer, 0, localSigner.address],
+    });
+    const outcomeDeployment = await publicClient.waitForTransactionReceipt({
+      hash: outcomeDeploymentHash,
+    });
+    const outcomeAddress = outcomeDeployment.contractAddress;
+    if (outcomeDeployment.status !== 'success' || outcomeAddress === null || outcomeAddress === undefined) {
+      throw new Error('OutcomeRegistry deployment failed.');
+    }
+    const outcomeGateway = new ViemOutcomeRegistryGateway({
+      rpcUrl,
+      chain,
+      contractAddress: outcomeAddress,
+      account: localSigner,
+    });
+    await expect(outcomeGateway.health()).resolves.toEqual({ chainId, contractDeployed: true });
+    const outcomeCommand = {
+      jobId,
+      agreementHash,
+      submissionHash: keccak256(stringToBytes('submission')),
+      verificationReportHash: keccak256(stringToBytes('verification-report')),
+      buyerAgentId: 'erc8004:16602:123',
+      providerAgentId: 'erc8004:16602:456',
+      outcome: 'PASS',
+    } as const;
+    const preparedOutcome = await outcomeGateway.prepareRecordOutcome(outcomeCommand);
+    await expect(outcomeGateway.broadcastPreparedOutcome(preparedOutcome)).resolves.toBe(
+      preparedOutcome.transactionHash,
+    );
+    await expect(outcomeGateway.broadcastPreparedOutcome(preparedOutcome)).resolves.toBe(
+      preparedOutcome.transactionHash,
+    );
+    const confirmedOutcome = await outcomeGateway.confirmRecordOutcome(
+      outcomeCommand,
+      preparedOutcome,
+    );
+    expect(confirmedOutcome.record).toMatchObject({
+      agreementHash,
+      submissionHash: outcomeCommand.submissionHash,
+      verificationReportHash: outcomeCommand.verificationReportHash,
+      buyerIdentityHash: agentIdentityToHash(outcomeCommand.buyerAgentId),
+      providerIdentityHash: agentIdentityToHash(outcomeCommand.providerAgentId),
+      outcome: 'PASS',
+    });
   });
 });
