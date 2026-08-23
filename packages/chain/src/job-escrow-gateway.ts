@@ -1,6 +1,7 @@
 import {
   createPublicClient,
   createWalletClient,
+  defineChain,
   encodeFunctionData,
   getAddress,
   http,
@@ -79,6 +80,30 @@ export type ChainHealth = {
   chainId: number;
   contractDeployed: true;
 };
+
+export type AgentClearChainDefinition = {
+  chainId: number;
+  name: string;
+  nativeCurrencySymbol: string;
+  rpcUrl: string;
+  explorerUrl?: string;
+};
+
+export function defineAgentClearChain(config: AgentClearChainDefinition): Chain {
+  return defineChain({
+    id: config.chainId,
+    name: config.name,
+    nativeCurrency: {
+      name: config.nativeCurrencySymbol,
+      symbol: config.nativeCurrencySymbol,
+      decimals: 18,
+    },
+    rpcUrls: { default: { http: [config.rpcUrl] } },
+    ...(config.explorerUrl === undefined
+      ? {}
+      : { blockExplorers: { default: { name: `${config.name} Explorer`, url: config.explorerUrl } } }),
+  });
+}
 
 export class ChainConfigurationError extends Error {
   public constructor(message: string) {
@@ -185,6 +210,14 @@ export class ViemJobEscrowGateway {
 
   public get signerAddress(): Address {
     return accountAddress(this.#options.account);
+  }
+
+  public get chainId(): number {
+    return this.#options.chain.id;
+  }
+
+  public get contractAddress(): Address {
+    return this.#options.contractAddress;
   }
 
   public async health(): Promise<ChainHealth> {

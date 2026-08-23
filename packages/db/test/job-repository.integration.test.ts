@@ -19,7 +19,9 @@ describe.skipIf(databaseUrl === undefined)('PostgresJobRepository', () => {
   });
 
   beforeEach(async () => {
-    await client.db.execute(sql`truncate table idempotency_records, job_state_events, job_requirements, jobs`);
+    await client.db.execute(
+      sql`truncate table escrow_funding_operations, escrows, idempotency_records, job_state_events, job_requirements, jobs`,
+    );
   });
 
   afterAll(async () => {

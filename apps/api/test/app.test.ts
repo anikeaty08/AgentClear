@@ -1,10 +1,13 @@
 import {
   IdempotencyKeyReusedError,
+  InvalidJobTransitionError,
   JobService,
   type CreateJobPersistenceInput,
   type CreateJobPersistenceResult,
   type Job,
   type JobRepository,
+  type TransitionJobPersistenceInput,
+  type TransitionJobPersistenceResult,
 } from '@agentclear/domain';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -33,13 +36,43 @@ class MemoryJobRepository implements JobRepository {
     return this.#jobs.get(jobId) ?? null;
   }
 
+  public async transition(
+    input: TransitionJobPersistenceInput,
+  ): Promise<TransitionJobPersistenceResult> {
+    const key = `${input.idempotency.scope}:${input.idempotency.key}`;
+    const claim = this.#claims.get(key);
+    if (claim !== undefined) {
+      if (claim.requestHash !== input.idempotency.requestHash) {
+        throw new IdempotencyKeyReusedError();
+      }
+      return { job: this.#jobs.get(claim.resourceId)!, replayed: true };
+    }
+    const job = this.#jobs.get(input.jobId)!;
+    if (job.state !== input.expectedState) {
+      throw new InvalidJobTransitionError(job.state, input.nextState);
+    }
+    const updated = {
+      ...job,
+      state: input.nextState,
+      version: job.version + 1,
+      updatedAt: input.event.occurredAt,
+    };
+    this.#claims.set(key, { requestHash: input.idempotency.requestHash, resourceId: input.jobId });
+    this.#jobs.set(input.jobId, updated);
+    return { job: updated, replayed: false };
+  }
+
   public async ping(): Promise<void> {}
 }
 
 const authenticator: Authenticator = {
   async authenticate(apiKey) {
     return apiKey === 'valid-test-api-key'
-      ? { id: 'operator_test', kind: 'operator', scopes: new Set(['jobs:read', 'jobs:write']) }
+      ? {
+          id: 'operator_test',
+          kind: 'operator',
+          scopes: new Set(['jobs:read', 'jobs:write', 'jobs:fund']),
+        }
       : null;
   },
 };
@@ -139,6 +172,48 @@ describe('AgentClear API', () => {
     expect(replay.statusCode).toBe(201);
     expect(replay.headers['idempotency-replayed']).toBe('true');
     expect(replay.json().data.job.id).toBe(first.json().data.job.id);
+  });
+
+  it('quotes a draft through the versioned API', async () => {
+    const app = await createTestApp();
+    const created = await app.inject({
+      method: 'POST',
+      url: '/v1/jobs',
+      headers: {
+        authorization: 'Bearer valid-test-api-key',
+        'idempotency-key': 'create-job-for-quote-001',
+      },
+      payload: validJob,
+    });
+    const jobId = created.json().data.job.id as string;
+
+    const quoted = await app.inject({
+      method: 'POST',
+      url: `/v1/jobs/${jobId}/quote`,
+      headers: {
+        authorization: 'Bearer valid-test-api-key',
+        'idempotency-key': 'quote-job-test-001',
+      },
+    });
+
+    expect(quoted.statusCode).toBe(200);
+    expect(quoted.json().data.job).toMatchObject({ id: jobId, state: 'QUOTED', version: 2 });
+  });
+
+  it('reports an explicit degraded state when chain funding is not configured', async () => {
+    const app = await createTestApp();
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/jobs/0198d462-75c0-7000-8000-000000000001/fund',
+      headers: {
+        authorization: 'Bearer valid-test-api-key',
+        'idempotency-key': 'fund-job-disabled-001',
+      },
+      payload: {},
+    });
+
+    expect(response.statusCode).toBe(503);
+    expect(response.json().error.code).toBe('CHAIN_UNAVAILABLE');
   });
 
   it('returns a stable validation error without a stack trace', async () => {

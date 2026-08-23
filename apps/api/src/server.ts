@@ -1,6 +1,10 @@
 import { loadRuntimeConfig } from '@agentclear/config';
-import { createDatabaseClient, PostgresJobRepository } from '@agentclear/db';
-import { JobService } from '@agentclear/domain';
+import {
+  createPrivateKeyEscrowGateway,
+  defineAgentClearChain,
+} from '@agentclear/chain';
+import { createDatabaseClient, PostgresEscrowRepository, PostgresJobRepository } from '@agentclear/db';
+import { FundingService, JobService } from '@agentclear/domain';
 
 import { buildApp } from './app.js';
 import { BootstrapApiKeyAuthenticator } from './auth.js';
@@ -9,6 +13,33 @@ const config = loadRuntimeConfig();
 const database = createDatabaseClient(config.databaseUrl);
 const jobRepository = new PostgresJobRepository(database.db);
 const jobService = new JobService({ repository: jobRepository });
+const chain =
+  config.chain === undefined
+    ? undefined
+    : createPrivateKeyEscrowGateway({
+        rpcUrl: config.chain.rpcUrl,
+        chain: defineAgentClearChain({
+          chainId: config.chain.chainId,
+          name: config.chain.name,
+          nativeCurrencySymbol: config.chain.nativeCurrencySymbol,
+          rpcUrl: config.chain.rpcUrl,
+          ...(config.chain.explorerUrl === undefined
+            ? {}
+            : { explorerUrl: config.chain.explorerUrl }),
+        }),
+        contractAddress: config.chain.escrowAddress,
+        privateKey: config.chain.signerPrivateKey,
+        confirmations: config.chain.confirmations,
+      });
+const fundingService =
+  config.chain === undefined || chain === undefined
+    ? undefined
+    : new FundingService({
+        jobRepository,
+        escrowRepository: new PostgresEscrowRepository(database.db),
+        gateway: chain,
+        maxPerJobBaseUnits: config.chain.maxPerJobBaseUnits,
+      });
 const authenticator = new BootstrapApiKeyAuthenticator(
   config.auth.bootstrapApiKey,
   config.auth.apiKeyPepper,
@@ -19,6 +50,8 @@ const app = await buildApp({
   jobService,
   jobRepository,
   authenticator,
+  ...(fundingService === undefined ? {} : { fundingService }),
+  ...(chain === undefined ? {} : { chainHealth: async () => chain.health() }),
   logger: {
     level: config.api.logLevel,
     redact: {
@@ -47,4 +80,3 @@ try {
   await app.close();
   process.exitCode = 1;
 }
-

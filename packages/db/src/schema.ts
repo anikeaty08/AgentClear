@@ -1,5 +1,6 @@
 import type { JobAgreement, JobState } from '@agentclear/domain';
 import { JOB_STATES } from '@agentclear/domain';
+import { sql } from 'drizzle-orm';
 import {
   boolean,
   index,
@@ -13,6 +14,7 @@ import {
   text,
   timestamp,
   unique,
+  uniqueIndex,
   uuid,
   varchar,
 } from 'drizzle-orm/pg-core';
@@ -24,6 +26,20 @@ export const jobActorTypeEnum = pgEnum('job_actor_type', [
   'service',
   'verifier',
   'resolver',
+]);
+export const escrowStatusEnum = pgEnum('escrow_status', [
+  'PENDING',
+  'FUNDED',
+  'DISPUTED',
+  'RELEASED',
+  'REFUNDED',
+  'FAILED',
+]);
+export const fundingOperationStatusEnum = pgEnum('funding_operation_status', [
+  'CREATED',
+  'PREPARED',
+  'BROADCAST',
+  'CONFIRMED',
 ]);
 
 export const jobs = pgTable(
@@ -106,10 +122,76 @@ export const idempotencyRecords = pgTable(
   ],
 );
 
+export const escrows = pgTable(
+  'escrows',
+  {
+    jobId: uuid('job_id')
+      .primaryKey()
+      .references(() => jobs.id, { onDelete: 'restrict' }),
+    chainId: integer('chain_id').notNull(),
+    contractAddress: varchar('contract_address', { length: 42 }).notNull(),
+    jobKey: varchar('job_key', { length: 66 }),
+    buyerAddress: varchar('buyer_address', { length: 42 }).notNull(),
+    providerAddress: varchar('provider_address', { length: 42 }),
+    amountBaseUnits: numeric('amount_base_units', { precision: 78, scale: 0 }).notNull(),
+    deadline: timestamp('deadline', { withTimezone: true, mode: 'date' }).notNull(),
+    agreementHash: varchar('agreement_hash', { length: 66 }).notNull(),
+    status: escrowStatusEnum('status').notNull(),
+    fundingTransactionHash: varchar('funding_transaction_hash', { length: 66 }),
+    fundingBlockNumber: numeric('funding_block_number', { precision: 78, scale: 0 }),
+    createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull(),
+  },
+  (table) => [
+    unique('escrows_job_key_unique').on(table.jobKey),
+    unique('escrows_funding_transaction_hash_unique').on(table.fundingTransactionHash),
+    index('escrows_status_updated_at_idx').on(table.status, table.updatedAt),
+  ],
+);
+
+export const escrowFundingOperations = pgTable(
+  'escrow_funding_operations',
+  {
+    id: uuid('id').primaryKey(),
+    jobId: uuid('job_id')
+      .notNull()
+      .references(() => jobs.id, { onDelete: 'restrict' }),
+    status: fundingOperationStatusEnum('status').notNull(),
+    chainId: integer('chain_id').notNull(),
+    contractAddress: varchar('contract_address', { length: 42 }).notNull(),
+    signerAddress: varchar('signer_address', { length: 42 }).notNull(),
+    providerAddress: varchar('provider_address', { length: 42 }),
+    amountBaseUnits: numeric('amount_base_units', { precision: 78, scale: 0 }).notNull(),
+    deadline: timestamp('deadline', { withTimezone: true, mode: 'date' }).notNull(),
+    agreementHash: varchar('agreement_hash', { length: 66 }).notNull(),
+    jobKey: varchar('job_key', { length: 66 }),
+    serializedTransaction: text('serialized_transaction'),
+    transactionHash: varchar('transaction_hash', { length: 66 }),
+    blockNumber: numeric('block_number', { precision: 78, scale: 0 }),
+    idempotencyScope: varchar('idempotency_scope', { length: 255 }).notNull(),
+    idempotencyKey: varchar('idempotency_key', { length: 255 }).notNull(),
+    requestHash: varchar('request_hash', { length: 66 }).notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull(),
+  },
+  (table) => [
+    unique('escrow_funding_operations_idempotency_unique').on(
+      table.idempotencyScope,
+      table.idempotencyKey,
+    ),
+    unique('escrow_funding_operations_transaction_hash_unique').on(table.transactionHash),
+    uniqueIndex('escrow_funding_operations_active_job_unique')
+      .on(table.jobId)
+      .where(sql`${table.status} in ('CREATED', 'PREPARED', 'BROADCAST')`),
+    index('escrow_funding_operations_status_updated_at_idx').on(table.status, table.updatedAt),
+  ],
+);
+
 export const databaseSchema = {
   jobs,
   jobRequirements,
   jobStateEvents,
   idempotencyRecords,
+  escrows,
+  escrowFundingOperations,
 };
-

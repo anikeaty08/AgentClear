@@ -15,7 +15,16 @@
         "API_PORT",
         "BOOTSTRAP_API_KEY",
         "BOOTSTRAP_PRINCIPAL_ID",
+        "CHAIN_CONFIRMATIONS",
+        "CHAIN_EXPLORER_URL",
+        "CHAIN_ID",
+        "CHAIN_MAX_PER_JOB_BASE_UNITS",
+        "CHAIN_NAME",
+        "CHAIN_NATIVE_CURRENCY_SYMBOL",
+        "CHAIN_RPC_URL",
+        "CHAIN_SIGNER_PRIVATE_KEY",
         "DATABASE_URL",
+        "JOB_ESCROW_ADDRESS",
         "LOG_LEVEL",
         "NODE_ENV"
       ]

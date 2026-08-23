@@ -21,7 +21,9 @@ describe.skipIf(databaseUrl === undefined)('AgentClear API with PostgreSQL', () 
   });
 
   beforeEach(async () => {
-    await database.db.execute(sql`truncate table idempotency_records, job_state_events, job_requirements, jobs`);
+    await database.db.execute(
+      sql`truncate table escrow_funding_operations, escrows, idempotency_records, job_state_events, job_requirements, jobs`,
+    );
   });
 
   afterAll(async () => {
@@ -67,4 +69,3 @@ describe.skipIf(databaseUrl === undefined)('AgentClear API with PostgreSQL', () 
     expect(loaded.json().data.job).toMatchObject({ id: jobId, state: 'DRAFT' });
   });
 });
-

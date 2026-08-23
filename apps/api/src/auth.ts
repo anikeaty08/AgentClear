@@ -1,6 +1,6 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 
-export const AUTH_SCOPES = ['jobs:read', 'jobs:write'] as const;
+export const AUTH_SCOPES = ['jobs:read', 'jobs:write', 'jobs:fund'] as const;
 export type AuthScope = (typeof AUTH_SCOPES)[number];
 
 export type AuthPrincipal = {
@@ -44,4 +44,3 @@ export class BootstrapApiKeyAuthenticator implements Authenticator {
     return createHmac('sha256', pepper).update(apiKey, 'utf8').digest();
   }
 }
-

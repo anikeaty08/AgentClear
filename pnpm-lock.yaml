@@ -35,6 +35,9 @@ importers:
 
   apps/api:
     dependencies:
+      '@agentclear/chain':
+        specifier: workspace:*
+        version: link:../../packages/chain
       '@agentclear/config':
         specifier: workspace:*
         version: link:../../packages/config
@@ -54,9 +57,15 @@ importers:
         specifier: 4.4.3
         version: 4.4.3
     devDependencies:
+      '@agentclear/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
       drizzle-orm:
         specifier: 0.45.2
         version: 0.45.2(@types/pg@8.23.1)(pg@8.23.0)
+      viem:
+        specifier: 2.55.19
+        version: 2.55.19(typescript@6.0.3)(zod@4.4.3)
 
   packages/chain:
     dependencies:

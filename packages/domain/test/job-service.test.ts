@@ -2,12 +2,15 @@ import { describe, expect, it } from 'vitest';
 
 import {
   IdempotencyKeyReusedError,
+  InvalidJobTransitionError,
   JobDeadlineNotFutureError,
   JobService,
   type CreateJobPersistenceInput,
   type CreateJobPersistenceResult,
   type Job,
   type JobRepository,
+  type TransitionJobPersistenceInput,
+  type TransitionJobPersistenceResult,
 } from '../src/index.js';
 
 class MemoryJobRepository implements JobRepository {
@@ -34,6 +37,35 @@ class MemoryJobRepository implements JobRepository {
 
   public async findById(jobId: string): Promise<Job | null> {
     return this.#jobs.get(jobId) ?? null;
+  }
+
+  public async transition(
+    input: TransitionJobPersistenceInput,
+  ): Promise<TransitionJobPersistenceResult> {
+    const claimKey = `${input.idempotency.scope}:${input.idempotency.key}`;
+    const existingClaim = this.#claims.get(claimKey);
+    if (existingClaim !== undefined) {
+      if (existingClaim.requestHash !== input.idempotency.requestHash) {
+        throw new IdempotencyKeyReusedError();
+      }
+      return { job: this.#jobs.get(existingClaim.resourceId)!, replayed: true };
+    }
+    const job = this.#jobs.get(input.jobId)!;
+    if (job.state !== input.expectedState) {
+      throw new InvalidJobTransitionError(job.state, input.nextState);
+    }
+    const updated = {
+      ...job,
+      state: input.nextState,
+      version: job.version + 1,
+      updatedAt: input.event.occurredAt,
+    };
+    this.#claims.set(claimKey, {
+      requestHash: input.idempotency.requestHash,
+      resourceId: input.jobId,
+    });
+    this.#jobs.set(input.jobId, updated);
+    return { job: updated, replayed: false };
   }
 
   public async ping(): Promise<void> {}
@@ -127,5 +159,29 @@ describe('JobService', () => {
       }),
     ).rejects.toBeInstanceOf(JobDeadlineNotFutureError);
   });
-});
 
+  it('quotes a draft exactly once and records an idempotent transition', async () => {
+    const repository = new MemoryJobRepository();
+    const service = new JobService({
+      repository,
+      clock: () => new Date('2026-08-23T00:00:00.000Z'),
+    });
+    const created = await service.createJob(validInput, {
+      actor: { type: 'agent', id: validInput.buyerAgentId },
+      idempotencyKey: 'idem-create-quote-001',
+    });
+    const context = {
+      actor: { type: 'operator' as const, id: 'operator_test' },
+      idempotencyKey: 'idem-quote-001',
+    };
+
+    const quoted = await service.quoteJob(created.job.id, context);
+    const replayed = await service.quoteJob(created.job.id, context);
+
+    expect(quoted.job.state).toBe('QUOTED');
+    expect(quoted.job.version).toBe(2);
+    expect(quoted.replayed).toBe(false);
+    expect(replayed.replayed).toBe(true);
+    expect(replayed.job.id).toBe(created.job.id);
+  });
+});

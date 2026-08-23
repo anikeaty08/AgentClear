@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 import rateLimit from '@fastify/rate-limit';
-import type { JobRepository, JobService } from '@agentclear/domain';
+import type { FundingService, JobRepository, JobService } from '@agentclear/domain';
 import { DomainError } from '@agentclear/domain';
 import Fastify, { LogController, type FastifyRequest, type FastifyServerOptions } from 'fastify';
 import { ZodError, z } from 'zod';
@@ -45,6 +45,8 @@ export type BuildAppOptions = {
   jobService: JobService;
   jobRepository: JobRepository;
   authenticator: Authenticator;
+  fundingService?: FundingService;
+  chainHealth?: () => Promise<unknown>;
   logger?: FastifyServerOptions['logger'];
 };
 
@@ -120,10 +122,17 @@ export async function buildApp(options: BuildAppOptions) {
   app.get('/ready', async (_request, reply) => {
     try {
       await options.jobRepository.ping();
-      return { status: 'ready', dependencies: { database: 'up' } };
+      if (options.chainHealth !== undefined) await options.chainHealth();
+      return {
+        status: 'ready',
+        dependencies: {
+          database: 'up',
+          chain: options.chainHealth === undefined ? 'disabled' : 'up',
+        },
+      };
     } catch (error) {
       app.log.error({ err: error }, 'Readiness dependency failed');
-      return reply.status(503).send({ status: 'not_ready', dependencies: { database: 'down' } });
+      return reply.status(503).send({ status: 'not_ready' });
     }
   });
 
@@ -149,6 +158,55 @@ export async function buildApp(options: BuildAppOptions) {
     const { id } = jobIdParamsSchema.parse(request.params);
     const job = await options.jobService.getJob(id);
     return { data: { job }, meta: { requestId: request.id } };
+  });
+
+  app.post('/v1/jobs/:id/quote', async (request, reply) => {
+    const principal = requireScope(request, 'jobs:write');
+    const idempotencyKey = idempotencyKeySchema.parse(request.headers['idempotency-key']);
+    const { id } = jobIdParamsSchema.parse(request.params);
+    const result = await options.jobService.quoteJob(id, {
+      actor: { type: principal.kind === 'agent' ? 'agent' : 'operator', id: principal.id },
+      idempotencyKey,
+    });
+    return reply
+      .header('idempotency-replayed', result.replayed ? 'true' : 'false')
+      .send({ data: { job: result.job }, meta: { requestId: request.id, replayed: result.replayed } });
+  });
+
+  app.post('/v1/jobs/:id/fund', async (request, reply) => {
+    const principal = requireScope(request, 'jobs:fund');
+    const idempotencyKey = idempotencyKeySchema.parse(request.headers['idempotency-key']);
+    const { id } = jobIdParamsSchema.parse(request.params);
+    if (options.fundingService === undefined) {
+      throw new ApiError(
+        'CHAIN_UNAVAILABLE',
+        'Chain funding is disabled because the server has no complete chain configuration.',
+        503,
+      );
+    }
+    const result = await options.fundingService.fundJob(id, request.body, {
+      actor: { type: principal.kind === 'agent' ? 'agent' : 'operator', id: principal.id },
+      idempotencyKey,
+    });
+    const operation = result.operation;
+    return reply
+      .header('idempotency-replayed', result.replayed ? 'true' : 'false')
+      .send({
+        data: {
+          job: result.job,
+          funding: {
+            status: operation.status,
+            chainId: operation.chainId,
+            contractAddress: operation.contractAddress,
+            signerAddress: operation.signerAddress,
+            providerAddress: operation.providerAddress,
+            amountBaseUnits: operation.amountBaseUnits,
+            transactionHash: operation.transactionHash,
+            blockNumber: operation.blockNumber,
+          },
+        },
+        meta: { requestId: request.id, replayed: result.replayed },
+      });
   });
 
   return app;

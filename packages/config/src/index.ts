@@ -1,5 +1,8 @@
 import { z } from 'zod';
 
+const optionalEnvironmentValue = <T>(schema: z.ZodType<T>) =>
+  z.preprocess((value) => (value === '' ? undefined : value), schema.optional());
+
 const runtimeConfigSchema = z
   .object({
     NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
@@ -10,9 +13,40 @@ const runtimeConfigSchema = z
     API_KEY_PEPPER: z.string().min(32),
     BOOTSTRAP_API_KEY: z.string().min(32),
     BOOTSTRAP_PRINCIPAL_ID: z.string().min(1).default('local-operator'),
+    CHAIN_RPC_URL: optionalEnvironmentValue(z.url()),
+    CHAIN_ID: optionalEnvironmentValue(z.coerce.number().int().positive().safe()),
+    CHAIN_NAME: optionalEnvironmentValue(z.string().min(1)),
+    CHAIN_NATIVE_CURRENCY_SYMBOL: optionalEnvironmentValue(z.string().min(1).max(12)),
+    CHAIN_EXPLORER_URL: optionalEnvironmentValue(z.url()),
+    JOB_ESCROW_ADDRESS: optionalEnvironmentValue(z.string().regex(/^0x[0-9a-fA-F]{40}$/)),
+    CHAIN_SIGNER_PRIVATE_KEY: optionalEnvironmentValue(z.string().regex(/^0x[0-9a-fA-F]{64}$/)),
+    CHAIN_CONFIRMATIONS: optionalEnvironmentValue(z.coerce.number().int().min(1).max(100)),
+    CHAIN_MAX_PER_JOB_BASE_UNITS: optionalEnvironmentValue(z.string().regex(/^[1-9]\d*$/)),
   })
   .strict()
   .superRefine((value, context) => {
+    const requiredChainFields = [
+      'CHAIN_RPC_URL',
+      'CHAIN_ID',
+      'CHAIN_NAME',
+      'CHAIN_NATIVE_CURRENCY_SYMBOL',
+      'JOB_ESCROW_ADDRESS',
+      'CHAIN_SIGNER_PRIVATE_KEY',
+      'CHAIN_MAX_PER_JOB_BASE_UNITS',
+    ] as const;
+    const configuredChainFields = requiredChainFields.filter((field) => value[field] !== undefined);
+    if (configuredChainFields.length > 0 && configuredChainFields.length !== requiredChainFields.length) {
+      for (const field of requiredChainFields) {
+        if (value[field] === undefined) {
+          context.addIssue({
+            code: 'custom',
+            path: [field],
+            message: 'All required chain settings must be configured together.',
+          });
+        }
+      }
+    }
+
     if (value.NODE_ENV !== 'production') {
       return;
     }
@@ -30,6 +64,21 @@ const runtimeConfigSchema = z
         });
       }
     }
+
+    const chainHostname =
+      value.CHAIN_RPC_URL === undefined ? undefined : new URL(value.CHAIN_RPC_URL).hostname;
+    if (
+      value.CHAIN_ID === 31_337
+      || chainHostname === 'localhost'
+      || chainHostname === '127.0.0.1'
+      || chainHostname === '[::1]'
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['CHAIN_RPC_URL'],
+        message: 'Local development chain settings are forbidden in production.',
+      });
+    }
   });
 
 export type RuntimeConfig = {
@@ -45,6 +94,17 @@ export type RuntimeConfig = {
     bootstrapApiKey: string;
     bootstrapPrincipalId: string;
   };
+  chain?: {
+    rpcUrl: string;
+    chainId: number;
+    name: string;
+    nativeCurrencySymbol: string;
+    explorerUrl?: string;
+    escrowAddress: `0x${string}`;
+    signerPrivateKey: `0x${string}`;
+    confirmations: number;
+    maxPerJobBaseUnits: string;
+  };
 };
 
 export function loadRuntimeConfig(environment: NodeJS.ProcessEnv = process.env): RuntimeConfig {
@@ -57,7 +117,33 @@ export function loadRuntimeConfig(environment: NodeJS.ProcessEnv = process.env):
     API_KEY_PEPPER: environment['API_KEY_PEPPER'],
     BOOTSTRAP_API_KEY: environment['BOOTSTRAP_API_KEY'],
     BOOTSTRAP_PRINCIPAL_ID: environment['BOOTSTRAP_PRINCIPAL_ID'],
+    CHAIN_RPC_URL: environment['CHAIN_RPC_URL'],
+    CHAIN_ID: environment['CHAIN_ID'],
+    CHAIN_NAME: environment['CHAIN_NAME'],
+    CHAIN_NATIVE_CURRENCY_SYMBOL: environment['CHAIN_NATIVE_CURRENCY_SYMBOL'],
+    CHAIN_EXPLORER_URL: environment['CHAIN_EXPLORER_URL'],
+    JOB_ESCROW_ADDRESS: environment['JOB_ESCROW_ADDRESS'],
+    CHAIN_SIGNER_PRIVATE_KEY: environment['CHAIN_SIGNER_PRIVATE_KEY'],
+    CHAIN_CONFIRMATIONS: environment['CHAIN_CONFIRMATIONS'],
+    CHAIN_MAX_PER_JOB_BASE_UNITS: environment['CHAIN_MAX_PER_JOB_BASE_UNITS'],
   });
+
+  const chain =
+    parsed.CHAIN_RPC_URL === undefined
+      ? undefined
+      : {
+          rpcUrl: parsed.CHAIN_RPC_URL,
+          chainId: parsed.CHAIN_ID!,
+          name: parsed.CHAIN_NAME!,
+          nativeCurrencySymbol: parsed.CHAIN_NATIVE_CURRENCY_SYMBOL!,
+          ...(parsed.CHAIN_EXPLORER_URL === undefined
+            ? {}
+            : { explorerUrl: parsed.CHAIN_EXPLORER_URL }),
+          escrowAddress: parsed.JOB_ESCROW_ADDRESS! as `0x${string}`,
+          signerPrivateKey: parsed.CHAIN_SIGNER_PRIVATE_KEY! as `0x${string}`,
+          confirmations: parsed.CHAIN_CONFIRMATIONS ?? 1,
+          maxPerJobBaseUnits: parsed.CHAIN_MAX_PER_JOB_BASE_UNITS!,
+        };
 
   return {
     nodeEnv: parsed.NODE_ENV,
@@ -72,5 +158,6 @@ export function loadRuntimeConfig(environment: NodeJS.ProcessEnv = process.env):
       bootstrapApiKey: parsed.BOOTSTRAP_API_KEY,
       bootstrapPrincipalId: parsed.BOOTSTRAP_PRINCIPAL_ID,
     },
+    ...(chain === undefined ? {} : { chain }),
   };
 }

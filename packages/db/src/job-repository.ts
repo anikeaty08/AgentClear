@@ -1,9 +1,13 @@
 import {
   IdempotencyKeyReusedError,
+  InvalidJobTransitionError,
+  JobNotFoundError,
   type CreateJobPersistenceInput,
   type CreateJobPersistenceResult,
   type Job,
   type JobRepository,
+  type TransitionJobPersistenceInput,
+  type TransitionJobPersistenceResult,
 } from '@agentclear/domain';
 import { and, eq, sql } from 'drizzle-orm';
 
@@ -125,8 +129,93 @@ export class PostgresJobRepository implements JobRepository {
     return row === undefined ? null : rowToJob(row);
   }
 
+  public async transition(
+    input: TransitionJobPersistenceInput,
+  ): Promise<TransitionJobPersistenceResult> {
+    return this.database.transaction(async (transaction) => {
+      const occurredAt = new Date(input.event.occurredAt);
+      const [claim] = await transaction
+        .insert(idempotencyRecords)
+        .values({
+          scope: input.idempotency.scope,
+          key: input.idempotency.key,
+          requestHash: input.idempotency.requestHash,
+          resourceId: input.idempotency.resourceId,
+          createdAt: occurredAt,
+          expiresAt: new Date(input.idempotency.expiresAt),
+        })
+        .onConflictDoNothing()
+        .returning({ resourceId: idempotencyRecords.resourceId });
+
+      if (claim === undefined) {
+        const [existingClaim] = await transaction
+          .select()
+          .from(idempotencyRecords)
+          .where(
+            and(
+              eq(idempotencyRecords.scope, input.idempotency.scope),
+              eq(idempotencyRecords.key, input.idempotency.key),
+            ),
+          )
+          .limit(1);
+        if (existingClaim === undefined || existingClaim.requestHash !== input.idempotency.requestHash) {
+          throw new IdempotencyKeyReusedError();
+        }
+        const [existingJob] = await transaction
+          .select()
+          .from(jobs)
+          .where(eq(jobs.id, existingClaim.resourceId))
+          .limit(1);
+        if (existingJob === undefined) {
+          throw new Error('Idempotency record references a missing job.');
+        }
+        return { job: rowToJob(existingJob), replayed: true };
+      }
+
+      const [currentJob] = await transaction
+        .select()
+        .from(jobs)
+        .where(eq(jobs.id, input.jobId))
+        .for('update')
+        .limit(1);
+      if (currentJob === undefined) {
+        throw new JobNotFoundError(input.jobId);
+      }
+      if (currentJob.state !== input.expectedState) {
+        throw new InvalidJobTransitionError(currentJob.state, input.nextState);
+      }
+
+      const [updatedJob] = await transaction
+        .update(jobs)
+        .set({
+          state: input.nextState,
+          version: sql`${jobs.version} + 1`,
+          updatedAt: occurredAt,
+        })
+        .where(eq(jobs.id, input.jobId))
+        .returning();
+      if (updatedJob === undefined) {
+        throw new Error('Locked job disappeared during state transition.');
+      }
+
+      await transaction.insert(jobStateEvents).values({
+        id: input.event.id,
+        jobId: input.event.jobId,
+        fromState: input.event.fromState,
+        toState: input.event.toState,
+        actorType: input.event.actorType,
+        actorId: input.event.actorId,
+        reason: input.event.reason,
+        transactionHash: input.event.transactionHash,
+        evidenceReference: input.event.evidenceReference,
+        occurredAt,
+      });
+
+      return { job: rowToJob(updatedJob), replayed: false };
+    });
+  }
+
   public async ping(): Promise<void> {
     await this.database.execute(sql`select 1`);
   }
 }
-

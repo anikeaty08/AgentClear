@@ -2,7 +2,10 @@ export type DomainErrorCode =
   | 'IDEMPOTENCY_KEY_REUSED'
   | 'INVALID_JOB_TRANSITION'
   | 'JOB_DEADLINE_NOT_FUTURE'
-  | 'JOB_NOT_FOUND';
+  | 'JOB_NOT_FOUND'
+  | 'JOB_FUNDING_IN_PROGRESS'
+  | 'CHAIN_OPERATION_FAILED'
+  | 'SPENDING_POLICY_EXCEEDED';
 
 export class DomainError extends Error {
   public constructor(
@@ -43,3 +46,32 @@ export class IdempotencyKeyReusedError extends DomainError {
   }
 }
 
+export class JobFundingInProgressError extends DomainError {
+  public constructor(jobId: string) {
+    super(
+      'JOB_FUNDING_IN_PROGRESS',
+      `Job ${jobId} already has a funding operation in progress.`,
+      409,
+    );
+  }
+}
+
+export class ChainOperationFailedError extends DomainError {
+  public constructor() {
+    super(
+      'CHAIN_OPERATION_FAILED',
+      'The chain operation did not complete. Retry with the same idempotency key.',
+      502,
+    );
+  }
+}
+
+export class SpendingPolicyExceededError extends DomainError {
+  public constructor() {
+    super(
+      'SPENDING_POLICY_EXCEEDED',
+      'The job budget exceeds the configured per-job spending limit.',
+      403,
+    );
+  }
+}

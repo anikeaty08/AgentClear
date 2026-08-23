@@ -3,7 +3,11 @@ import { randomUUID } from 'node:crypto';
 import { JobDeadlineNotFutureError, JobNotFoundError } from './errors.js';
 import { sha256Commitment } from './canonical.js';
 import { createJobInputSchema, type CreateJobInput, type Job, type JobActor } from './job.js';
-import type { CreateJobPersistenceResult, JobRepository } from './job-repository.js';
+import type {
+  CreateJobPersistenceResult,
+  JobRepository,
+  TransitionJobPersistenceResult,
+} from './job-repository.js';
 import { decimalToBaseUnits } from './money.js';
 
 export type JobServiceDependencies = {
@@ -85,5 +89,34 @@ export class JobService {
     }
     return job;
   }
-}
 
+  public async quoteJob(
+    jobId: string,
+    context: { actor: JobActor; idempotencyKey: string },
+  ): Promise<TransitionJobPersistenceResult> {
+    await this.getJob(jobId);
+    const now = this.#clock();
+    return this.#repository.transition({
+      jobId,
+      expectedState: 'DRAFT',
+      nextState: 'QUOTED',
+      event: {
+        id: this.#idGenerator(),
+        jobId,
+        fromState: 'DRAFT',
+        toState: 'QUOTED',
+        actorType: context.actor.type,
+        actorId: context.actor.id,
+        reason: 'Agreement accepted for its maximum native-asset budget.',
+        occurredAt: now.toISOString(),
+      },
+      idempotency: {
+        scope: `jobs:quote:${context.actor.id}:${jobId}`,
+        key: context.idempotencyKey,
+        requestHash: sha256Commitment({ jobId }),
+        resourceId: jobId,
+        expiresAt: new Date(now.getTime() + 24 * 60 * 60 * 1_000).toISOString(),
+      },
+    });
+  }
+}

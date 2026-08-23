@@ -13,6 +13,7 @@
     "test:integration": "vitest run --config vitest.integration.config.ts"
   },
   "dependencies": {
+    "@agentclear/chain": "workspace:*",
     "@agentclear/config": "workspace:*",
     "@agentclear/db": "workspace:*",
     "@agentclear/domain": "workspace:*",
@@ -21,6 +22,8 @@
     "zod": "4.4.3"
   },
   "devDependencies": {
-    "drizzle-orm": "0.45.2"
+    "@agentclear/contracts": "workspace:*",
+    "drizzle-orm": "0.45.2",
+    "viem": "2.55.19"
   }
 }

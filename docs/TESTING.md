@@ -22,7 +22,9 @@ docker compose up -d postgres
 pnpm test:integration
 ```
 
-The command applies checked migrations and runs integration packages sequentially. PostgreSQL tests verify atomic job/event/requirement/idempotency persistence and the authenticated HTTP create/replay/read path. The chain integration test starts an ephemeral Anvil node, deploys the compiled `JobEscrow`, funds a newly generated local signer, prepares and rebroadcasts one signed funding transaction, verifies its receipt and value, reads the resulting escrow state, and assigns a provider through a second real transaction.
+The command applies checked migrations and runs integration packages sequentially. PostgreSQL tests verify atomic job/event/requirement/idempotency persistence and recovery from a failed first broadcast using the stored signed transaction. The chain integration test starts an ephemeral Anvil node, deploys the compiled `JobEscrow`, funds a newly generated local signer, prepares and rebroadcasts one signed funding transaction, verifies its receipt and value, reads the resulting escrow state, and assigns a provider through a second real transaction.
+
+The API integration suite composes the real layers: authenticated HTTP create and quote, PostgreSQL funding intent, viem signing/broadcast, deployed Anvil escrow, receipt/state attestation, atomic `FUNDED` transition, and exact idempotent replay. It also asserts that the serialized signed transaction never appears in the REST response.
 
 Foundry 1.7.1 must be available on `PATH` for the Anvil integration test. No test private key is committed; the signer is generated in memory for each run.
 
