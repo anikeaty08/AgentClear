@@ -3,8 +3,18 @@ import {
   createPrivateKeyEscrowGateway,
   defineAgentClearChain,
 } from '@agentclear/chain';
-import { createDatabaseClient, PostgresEscrowRepository, PostgresJobRepository } from '@agentclear/db';
-import { FundingService, JobService } from '@agentclear/domain';
+import {
+  createDatabaseClient,
+  PostgresAssignmentRepository,
+  PostgresEscrowRepository,
+  PostgresJobRepository,
+} from '@agentclear/db';
+import {
+  AssignmentService,
+  FundingService,
+  InMemoryExclusiveExecutor,
+  JobService,
+} from '@agentclear/domain';
 
 import { buildApp } from './app.js';
 import { BootstrapApiKeyAuthenticator } from './auth.js';
@@ -31,6 +41,7 @@ const chain =
         privateKey: config.chain.signerPrivateKey,
         confirmations: config.chain.confirmations,
       });
+const chainWriteExecutor = new InMemoryExclusiveExecutor();
 const fundingService =
   config.chain === undefined || chain === undefined
     ? undefined
@@ -39,6 +50,16 @@ const fundingService =
         escrowRepository: new PostgresEscrowRepository(database.db),
         gateway: chain,
         maxPerJobBaseUnits: config.chain.maxPerJobBaseUnits,
+        executor: chainWriteExecutor,
+      });
+const assignmentService =
+  config.chain === undefined || chain === undefined
+    ? undefined
+    : new AssignmentService({
+        jobRepository,
+        assignmentRepository: new PostgresAssignmentRepository(database.db),
+        gateway: chain,
+        executor: chainWriteExecutor,
       });
 const authenticator = new BootstrapApiKeyAuthenticator(
   config.auth.bootstrapApiKey,
@@ -51,6 +72,7 @@ const app = await buildApp({
   jobRepository,
   authenticator,
   ...(fundingService === undefined ? {} : { fundingService }),
+  ...(assignmentService === undefined ? {} : { assignmentService }),
   ...(chain === undefined ? {} : { chainHealth: async () => chain.health() }),
   logger: {
     level: config.api.logLevel,

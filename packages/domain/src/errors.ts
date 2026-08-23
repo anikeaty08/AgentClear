@@ -5,7 +5,10 @@ export type DomainErrorCode =
   | 'JOB_NOT_FOUND'
   | 'JOB_FUNDING_IN_PROGRESS'
   | 'CHAIN_OPERATION_FAILED'
-  | 'SPENDING_POLICY_EXCEEDED';
+  | 'CHAIN_SIGNER_BUSY'
+  | 'SPENDING_POLICY_EXCEEDED'
+  | 'JOB_ASSIGNMENT_IN_PROGRESS'
+  | 'PROVIDER_MISMATCH';
 
 export class DomainError extends Error {
   public constructor(
@@ -66,12 +69,42 @@ export class ChainOperationFailedError extends DomainError {
   }
 }
 
+export class ChainSignerBusyError extends DomainError {
+  public constructor() {
+    super(
+      'CHAIN_SIGNER_BUSY',
+      'The chain signer is recovering another operation. Retry that operation first.',
+      409,
+    );
+  }
+}
+
 export class SpendingPolicyExceededError extends DomainError {
   public constructor() {
     super(
       'SPENDING_POLICY_EXCEEDED',
       'The job budget exceeds the configured per-job spending limit.',
       403,
+    );
+  }
+}
+
+export class JobAssignmentInProgressError extends DomainError {
+  public constructor(jobId: string) {
+    super(
+      'JOB_ASSIGNMENT_IN_PROGRESS',
+      `Job ${jobId} already has a provider assignment in progress.`,
+      409,
+    );
+  }
+}
+
+export class ProviderMismatchError extends DomainError {
+  public constructor() {
+    super(
+      'PROVIDER_MISMATCH',
+      'The provider does not match the job agreement or buyer/provider separation rules.',
+      409,
     );
   }
 }

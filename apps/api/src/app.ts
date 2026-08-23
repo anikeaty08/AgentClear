@@ -1,7 +1,12 @@
 import { randomUUID } from 'node:crypto';
 
 import rateLimit from '@fastify/rate-limit';
-import type { FundingService, JobRepository, JobService } from '@agentclear/domain';
+import type {
+  AssignmentService,
+  FundingService,
+  JobRepository,
+  JobService,
+} from '@agentclear/domain';
 import { DomainError } from '@agentclear/domain';
 import Fastify, { LogController, type FastifyRequest, type FastifyServerOptions } from 'fastify';
 import { ZodError, z } from 'zod';
@@ -46,6 +51,7 @@ export type BuildAppOptions = {
   jobRepository: JobRepository;
   authenticator: Authenticator;
   fundingService?: FundingService;
+  assignmentService?: AssignmentService;
   chainHealth?: () => Promise<unknown>;
   logger?: FastifyServerOptions['logger'];
 };
@@ -201,6 +207,42 @@ export async function buildApp(options: BuildAppOptions) {
             signerAddress: operation.signerAddress,
             providerAddress: operation.providerAddress,
             amountBaseUnits: operation.amountBaseUnits,
+            transactionHash: operation.transactionHash,
+            blockNumber: operation.blockNumber,
+          },
+        },
+        meta: { requestId: request.id, replayed: result.replayed },
+      });
+  });
+
+  app.post('/v1/jobs/:id/assign', async (request, reply) => {
+    const principal = requireScope(request, 'jobs:assign');
+    const idempotencyKey = idempotencyKeySchema.parse(request.headers['idempotency-key']);
+    const { id } = jobIdParamsSchema.parse(request.params);
+    if (options.assignmentService === undefined) {
+      throw new ApiError(
+        'CHAIN_UNAVAILABLE',
+        'Provider assignment is disabled because the server has no complete chain configuration.',
+        503,
+      );
+    }
+    const result = await options.assignmentService.assignProvider(id, request.body, {
+      actor: { type: principal.kind === 'agent' ? 'agent' : 'operator', id: principal.id },
+      idempotencyKey,
+    });
+    const operation = result.operation;
+    return reply
+      .header('idempotency-replayed', result.replayed ? 'true' : 'false')
+      .send({
+        data: {
+          job: result.job,
+          assignment: {
+            status: operation.status,
+            chainId: operation.chainId,
+            contractAddress: operation.contractAddress,
+            signerAddress: operation.signerAddress,
+            providerAgentId: operation.providerAgentId,
+            providerAddress: operation.providerAddress,
             transactionHash: operation.transactionHash,
             blockNumber: operation.blockNumber,
           },

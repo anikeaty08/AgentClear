@@ -68,6 +68,10 @@ export type FundEscrowResult = ConfirmedChainWrite & {
   escrow: EscrowRecord;
 };
 
+export type AssignProviderResult = ConfirmedChainWrite & {
+  escrow: EscrowRecord;
+};
+
 export type PreparedFundingTransaction = {
   jobKey: Hex;
   transactionHash: Hex;
@@ -293,6 +297,10 @@ export class ViemJobEscrowGateway {
 
   /// Broadcasts a persisted signed transaction. Replays return the same hash when already known.
   public async broadcastPreparedFunding(prepared: PreparedFundingTransaction): Promise<Hex> {
+    return this.broadcastPreparedTransaction(prepared);
+  }
+
+  public async broadcastPreparedTransaction(prepared: PreparedFundingTransaction): Promise<Hex> {
     if (prepared.contractAddress !== this.#options.contractAddress) {
       throw new ChainConfigurationError('The prepared transaction targets a different escrow contract.');
     }
@@ -358,26 +366,71 @@ export class ViemJobEscrowGateway {
   }
 
   public async assignProvider(jobId: string, providerAddress: Address): Promise<ConfirmedChainWrite> {
+    const prepared = await this.prepareAssignProvider(jobId, providerAddress);
+    await this.broadcastPreparedTransaction(prepared);
+    return this.confirmAssignProvider(jobId, providerAddress, prepared);
+  }
+
+  public async prepareAssignProvider(
+    jobId: string,
+    providerAddress: Address,
+  ): Promise<PreparedFundingTransaction> {
     if (!isAddress(providerAddress) || providerAddress === zeroAddress) {
       throw new ChainConfigurationError('The provider address is invalid.');
+    }
+    if (typeof this.#options.account === 'string') {
+      throw new ChainConfigurationError(
+        'Durable assignment requires a local signer account, not an unlocked RPC address.',
+      );
     }
     const jobKey = jobIdToEscrowKey(jobId);
     const provider = getAddress(providerAddress);
     const { publicClient, walletClient } = this.#clients();
-    const { request } = await publicClient.simulateContract({
+    await publicClient.simulateContract({
       account: this.#options.account,
       address: this.#options.contractAddress,
       abi: jobEscrowAbi,
       functionName: 'assignProvider',
       args: [jobKey, provider],
     });
-    const transactionHash = await walletClient.writeContract(request);
+
+    const data = encodeFunctionData({
+      abi: jobEscrowAbi,
+      functionName: 'assignProvider',
+      args: [jobKey, provider],
+    });
+    const request = await walletClient.prepareTransactionRequest({
+      account: this.#options.account,
+      to: this.#options.contractAddress,
+      data,
+    });
+    const serializedTransaction = await walletClient.signTransaction(request);
+    return {
+      jobKey,
+      transactionHash: keccak256(serializedTransaction),
+      serializedTransaction,
+      contractAddress: this.#options.contractAddress,
+      signerAddress: this.signerAddress,
+    };
+  }
+
+  public async confirmAssignProvider(
+    jobId: string,
+    providerAddress: Address,
+    prepared: PreparedFundingTransaction,
+  ): Promise<AssignProviderResult> {
+    const jobKey = jobIdToEscrowKey(jobId);
+    const provider = getAddress(providerAddress);
+    if (prepared.jobKey !== jobKey || prepared.signerAddress !== this.signerAddress) {
+      throw new ChainConfigurationError('The prepared transaction does not match this assignment.');
+    }
+    const { publicClient } = this.#clients();
     const receipt = await publicClient.waitForTransactionReceipt({
-      hash: transactionHash,
+      hash: prepared.transactionHash,
       confirmations: this.#options.confirmations ?? 1,
     });
     if (receipt.status !== 'success') {
-      throw new ChainTransactionRevertedError(transactionHash);
+      throw new ChainTransactionRevertedError(prepared.transactionHash);
     }
 
     const escrow = await this.getEscrowByKey(jobKey);
@@ -386,9 +439,10 @@ export class ViemJobEscrowGateway {
     }
 
     return {
-      transactionHash,
+      transactionHash: prepared.transactionHash,
       blockNumber: receipt.blockNumber.toString(),
       contractAddress: this.#options.contractAddress,
+      escrow,
     };
   }
 

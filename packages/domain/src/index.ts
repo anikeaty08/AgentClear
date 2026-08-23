@@ -1,5 +1,7 @@
 export * from './canonical.js';
+export * from './assignment.js';
 export * from './errors.js';
+export * from './exclusive-executor.js';
 export * from './funding.js';
 export * from './job.js';
 export * from './job-repository.js';

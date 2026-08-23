@@ -11,14 +11,9 @@ import {
 } from './errors.js';
 import type { Job, JobActor, JobStateEvent } from './job.js';
 import type { IdempotencyClaim, JobRepository } from './job-repository.js';
+import { InMemoryExclusiveExecutor, type ExclusiveExecutor } from './exclusive-executor.js';
 
-const addressSchema = z.string().regex(/^0x[0-9a-fA-F]{40}$/);
-
-export const fundJobInputSchema = z
-  .object({
-    providerAddress: addressSchema.optional(),
-  })
-  .strict();
+export const fundJobInputSchema = z.object({}).strict();
 
 export type FundJobInput = z.infer<typeof fundJobInputSchema>;
 
@@ -124,6 +119,7 @@ export type FundingServiceDependencies = {
   maxPerJobBaseUnits: string;
   clock?: () => Date;
   idGenerator?: () => string;
+  executor?: ExclusiveExecutor;
 };
 
 export type FundJobResult = {
@@ -139,7 +135,7 @@ export class FundingService {
   readonly #maxPerJobBaseUnits: bigint;
   readonly #clock: () => Date;
   readonly #idGenerator: () => string;
-  #exclusiveTail: Promise<void> = Promise.resolve();
+  readonly #executor: ExclusiveExecutor;
 
   public constructor(dependencies: FundingServiceDependencies) {
     this.#jobRepository = dependencies.jobRepository;
@@ -148,6 +144,7 @@ export class FundingService {
     this.#maxPerJobBaseUnits = BigInt(dependencies.maxPerJobBaseUnits);
     this.#clock = dependencies.clock ?? (() => new Date());
     this.#idGenerator = dependencies.idGenerator ?? randomUUID;
+    this.#executor = dependencies.executor ?? new InMemoryExclusiveExecutor();
   }
 
   public async fundJob(
@@ -155,8 +152,8 @@ export class FundingService {
     rawInput: unknown,
     context: { actor: JobActor; idempotencyKey: string },
   ): Promise<FundJobResult> {
-    const input = fundJobInputSchema.parse(rawInput ?? {});
-    return this.#runExclusive(async () => {
+    fundJobInputSchema.parse(rawInput ?? {});
+    return this.#executor.runExclusive(async () => {
       const job = await this.#jobRepository.findById(jobId);
       if (job === null) {
         throw new JobNotFoundError(jobId);
@@ -171,12 +168,9 @@ export class FundingService {
         agreementHash: job.agreementHash,
         amountBaseUnits: job.budgetAmountBaseUnits,
         deadline: job.agreement.deadline,
-        ...(input.providerAddress === undefined
-          ? {}
-          : { providerAddress: input.providerAddress as `0x${string}` }),
       };
       const idempotencyScope = `jobs:fund:${context.actor.id}:${jobId}`;
-      const requestHash = sha256Commitment({ jobId, providerAddress: input.providerAddress ?? null });
+      const requestHash = sha256Commitment({ jobId });
       let result = await this.#escrowRepository.beginFunding({
         operation: {
           id: this.#idGenerator(),
@@ -185,7 +179,7 @@ export class FundingService {
           chainId: this.#gateway.chainId,
           contractAddress: this.#gateway.contractAddress,
           signerAddress: this.#gateway.signerAddress,
-          providerAddress: (input.providerAddress as `0x${string}` | undefined) ?? null,
+          providerAddress: null,
           amountBaseUnits: job.budgetAmountBaseUnits,
           deadline: job.agreement.deadline,
           agreementHash: job.agreementHash,
@@ -276,17 +270,4 @@ export class FundingService {
     };
   }
 
-  async #runExclusive<T>(work: () => Promise<T>): Promise<T> {
-    const previous = this.#exclusiveTail;
-    let release: () => void = () => undefined;
-    this.#exclusiveTail = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    await previous;
-    try {
-      return await work();
-    } finally {
-      release();
-    }
-  }
 }

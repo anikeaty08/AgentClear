@@ -15,6 +15,13 @@
       "when": 1787475600000,
       "tag": "0001_escrow_funding",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1787479200000,
+      "tag": "0002_provider_assignment",
+      "breakpoints": true
     }
   ]
 }

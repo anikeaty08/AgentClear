@@ -56,21 +56,28 @@ Success returns `201` with `data.job`. Exact replay returns the original job and
 
 `POST /v1/jobs/:id/fund` requires `jobs:fund`, an idempotency key, and complete server-side chain configuration.
 
-Optional body for a provider known at funding time:
-
-```json
-{
-  "providerAddress": "0x0000000000000000000000000000000000000001"
-}
-```
-
-An empty object funds an open, unassigned escrow. The server enforces its configured per-job spending ceiling, persists the exact signed transaction before broadcast, waits for confirmation, reads the contract state, and only then transitions `QUOTED` to `FUNDED`.
+The body must be an empty object. The current REST workflow deliberately funds an unassigned escrow and assigns the provider through the separately authorized endpoint below. The server enforces its configured per-job spending ceiling, persists the exact signed transaction before broadcast, waits for confirmation, reads the contract state, and only then transitions `QUOTED` to `FUNDED`.
 
 The response exposes the contract address, signer address, amount, transaction hash, block number, and confirmed status. It never exposes the serialized signed transaction or signer key. A retry must use the same idempotency key so an interrupted operation rebroadcasts the same transaction hash.
 
+## Assign a provider
+
+`POST /v1/jobs/:id/assign` requires `jobs:assign`, an idempotency key, complete server-side chain configuration, and a job in `FUNDED` or a resumable assignment in `OPEN`.
+
+```json
+{
+  "providerAgentId": "erc8004:16602:456",
+  "providerAddress": "0x1111111111111111111111111111111111111111"
+}
+```
+
+The provider identity cannot equal the buyer identity and must match `agreement.providerAgentId` when the agreement preselected one. The service atomically records `FUNDED -> OPEN`, persists the exact signed assignment transaction before broadcast, confirms and reads the escrow provider, then records `OPEN -> ASSIGNED`. Exact retries reuse the same transaction hash. The response omits the serialized transaction.
+
+The `erc8004:*` value is format-validated but is not yet resolved against a live ERC-8004 IdentityRegistry. That adapter remains a release blocker, so the API does not claim the identity exists on-chain yet.
+
 ## Get a job
 
-`GET /v1/jobs/:id` requires `jobs:read` and returns the stored canonical agreement, agreement hash, internal base-unit budget, state, version, and timestamps.
+`GET /v1/jobs/:id` requires `jobs:read` and returns the stored canonical agreement, current provider identity when assigned, agreement hash, internal base-unit budget, state, version, and timestamps.
 
 ## Errors
 
@@ -84,4 +91,4 @@ The response exposes the contract address, signer address, amount, transaction h
 }
 ```
 
-Stable codes currently include `AUTHENTICATION_REQUIRED`, `INSUFFICIENT_SCOPE`, `INVALID_REQUEST`, `RATE_LIMIT_EXCEEDED`, `JOB_NOT_FOUND`, `JOB_DEADLINE_NOT_FUTURE`, `INVALID_JOB_TRANSITION`, `IDEMPOTENCY_KEY_REUSED`, `CHAIN_UNAVAILABLE`, `CHAIN_OPERATION_FAILED`, `JOB_FUNDING_IN_PROGRESS`, `SPENDING_POLICY_EXCEEDED`, and `INTERNAL_ERROR`.
+Stable codes currently include `AUTHENTICATION_REQUIRED`, `INSUFFICIENT_SCOPE`, `INVALID_REQUEST`, `RATE_LIMIT_EXCEEDED`, `JOB_NOT_FOUND`, `JOB_DEADLINE_NOT_FUTURE`, `INVALID_JOB_TRANSITION`, `IDEMPOTENCY_KEY_REUSED`, `CHAIN_UNAVAILABLE`, `CHAIN_OPERATION_FAILED`, `CHAIN_SIGNER_BUSY`, `JOB_FUNDING_IN_PROGRESS`, `JOB_ASSIGNMENT_IN_PROGRESS`, `PROVIDER_MISMATCH`, `SPENDING_POLICY_EXCEEDED`, and `INTERNAL_ERROR`.

@@ -1,18 +1,18 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  AssignmentService,
   ChainOperationFailedError,
-  FundingService,
   IdempotencyKeyReusedError,
   InvalidJobTransitionError,
-  SpendingPolicyExceededError,
-  type BeginFundingInput,
-  type BeginFundingResult,
-  type ConfirmFundingPersistenceInput,
+  ProviderMismatchError,
+  type AssignmentGateway,
+  type AssignmentOperation,
+  type AssignmentRepository,
+  type AssignmentResult,
+  type BeginAssignmentInput,
+  type ConfirmAssignmentPersistenceInput,
   type CreateJobPersistenceResult,
-  type EscrowGateway,
-  type EscrowRepository,
-  type FundingOperation,
   type Job,
   type JobRepository,
   type PreparedFundingTransaction,
@@ -22,7 +22,7 @@ import {
 const hex = (character: string, bytes: number) =>
   `0x${character.repeat(bytes * 2)}` as `0x${string}`;
 
-const quotedJob: Job = {
+const fundedJob: Job = {
   id: '0198d462-75c0-7000-8000-000000000001',
   agreement: {
     jobId: '0198d462-75c0-7000-8000-000000000001',
@@ -43,54 +43,69 @@ const quotedJob: Job = {
   agreementHash: hex('a', 32),
   budgetAmountBaseUnits: '2000000000000000000',
   minimumScoreBps: 9000,
-  state: 'QUOTED',
-  version: 2,
+  state: 'FUNDED',
+  version: 3,
   createdAt: '2026-08-23T00:00:00.000Z',
   updatedAt: '2026-08-23T00:00:01.000Z',
 };
 
-class FundingJobRepository implements JobRepository {
-  public constructor(private job: Job) {}
+class AssignmentJobRepository implements JobRepository {
+  public constructor(public job: Job) {}
 
   public async findById(jobId: string): Promise<Job | null> {
     return jobId === this.job.id ? this.job : null;
   }
 
   public async create(): Promise<CreateJobPersistenceResult> {
-    throw new Error('Not used by FundingService tests.');
+    throw new Error('Not used by AssignmentService tests.');
   }
 
   public async transition(): Promise<TransitionJobPersistenceResult> {
-    throw new Error('Not used by FundingService tests.');
+    throw new Error('Not used by AssignmentService tests.');
   }
 
   public async ping(): Promise<void> {}
 }
 
-class MemoryEscrowRepository implements EscrowRepository {
-  readonly #operations = new Map<string, FundingOperation>();
+class MemoryAssignmentRepository implements AssignmentRepository {
+  readonly #operations = new Map<string, AssignmentOperation>();
   readonly #claims = new Map<string, { requestHash: string; operationId: string }>();
 
-  public constructor(private readonly job: Job) {}
+  public constructor(private readonly jobRepository: AssignmentJobRepository) {}
 
-  public async beginFunding(input: BeginFundingInput): Promise<BeginFundingResult> {
+  public async beginAssignment(input: BeginAssignmentInput): Promise<AssignmentResult> {
     const key = `${input.idempotency.scope}:${input.idempotency.key}`;
     const claim = this.#claims.get(key);
     if (claim !== undefined) {
       if (claim.requestHash !== input.idempotency.requestHash) throw new IdempotencyKeyReusedError();
-      return { job: this.currentJob(claim.operationId), operation: this.#operations.get(claim.operationId)!, replayed: true };
+      return {
+        job: this.jobRepository.job,
+        operation: this.#operations.get(claim.operationId)!,
+        replayed: true,
+      };
     }
-    if (this.job.state !== 'QUOTED') throw new InvalidJobTransitionError(this.job.state, 'FUNDED');
-    this.#claims.set(key, { requestHash: input.idempotency.requestHash, operationId: input.operation.id });
+    if (this.jobRepository.job.state !== 'FUNDED') {
+      throw new InvalidJobTransitionError(this.jobRepository.job.state, 'ASSIGNED');
+    }
+    this.jobRepository.job = {
+      ...this.jobRepository.job,
+      state: 'OPEN',
+      version: this.jobRepository.job.version + 1,
+      updatedAt: input.openEvent.occurredAt,
+    };
+    this.#claims.set(key, {
+      requestHash: input.idempotency.requestHash,
+      operationId: input.operation.id,
+    });
     this.#operations.set(input.operation.id, input.operation);
-    return { job: this.job, operation: input.operation, replayed: false };
+    return { job: this.jobRepository.job, operation: input.operation, replayed: false };
   }
 
-  public async savePrepared(
+  public async savePreparedAssignment(
     operationId: string,
     prepared: PreparedFundingTransaction,
     updatedAt: string,
-  ): Promise<FundingOperation> {
+  ): Promise<AssignmentOperation> {
     return this.update(operationId, {
       status: 'PREPARED',
       jobKey: prepared.jobKey,
@@ -100,42 +115,43 @@ class MemoryEscrowRepository implements EscrowRepository {
     });
   }
 
-  public async markBroadcast(operationId: string, updatedAt: string): Promise<FundingOperation> {
+  public async markAssignmentBroadcast(
+    operationId: string,
+    updatedAt: string,
+  ): Promise<AssignmentOperation> {
     return this.update(operationId, { status: 'BROADCAST', updatedAt });
   }
 
-  public async confirmFunding(input: ConfirmFundingPersistenceInput): Promise<BeginFundingResult> {
+  public async confirmAssignment(
+    input: ConfirmAssignmentPersistenceInput,
+  ): Promise<AssignmentResult> {
     const operation = this.update(input.operationId, {
       status: 'CONFIRMED',
       serializedTransaction: null,
       blockNumber: input.confirmation.blockNumber,
       updatedAt: input.event.occurredAt,
     });
-    return { job: this.currentJob(input.operationId), operation, replayed: false };
-  }
-
-  public operation(operationId: string): FundingOperation | undefined {
-    return this.#operations.get(operationId);
-  }
-
-  private currentJob(operationId: string): Job {
-    const operation = this.#operations.get(operationId);
-    return operation?.status === 'CONFIRMED'
-      ? { ...this.job, state: 'FUNDED', version: 3, updatedAt: operation.updatedAt }
-      : this.job;
+    this.jobRepository.job = {
+      ...this.jobRepository.job,
+      providerAgentId: operation.providerAgentId,
+      state: 'ASSIGNED',
+      version: this.jobRepository.job.version + 1,
+      updatedAt: input.event.occurredAt,
+    };
+    return { job: this.jobRepository.job, operation, replayed: false };
   }
 
   private update(
     operationId: string,
-    patch: Partial<FundingOperation>,
-  ): FundingOperation {
+    patch: Partial<AssignmentOperation>,
+  ): AssignmentOperation {
     const operation = { ...this.#operations.get(operationId)!, ...patch };
     this.#operations.set(operationId, operation);
     return operation;
   }
 }
 
-class MemoryEscrowGateway implements EscrowGateway {
+class MemoryAssignmentGateway implements AssignmentGateway {
   public readonly chainId = 31_337;
   public readonly contractAddress = hex('1', 20);
   public readonly signerAddress = hex('2', 20);
@@ -144,7 +160,7 @@ class MemoryEscrowGateway implements EscrowGateway {
   public confirmCalls = 0;
   public failNextBroadcast = false;
 
-  public async prepareFundJob(): Promise<PreparedFundingTransaction> {
+  public async prepareAssignProvider(): Promise<PreparedFundingTransaction> {
     this.prepareCalls += 1;
     return {
       jobKey: hex('3', 32),
@@ -155,7 +171,7 @@ class MemoryEscrowGateway implements EscrowGateway {
     };
   }
 
-  public async broadcastPreparedFunding(): Promise<`0x${string}`> {
+  public async broadcastPreparedTransaction(): Promise<`0x${string}`> {
     this.broadcastCalls += 1;
     if (this.failNextBroadcast) {
       this.failNextBroadcast = false;
@@ -164,55 +180,54 @@ class MemoryEscrowGateway implements EscrowGateway {
     return hex('4', 32);
   }
 
-  public async confirmFundJob() {
+  public async confirmAssignProvider(
+    _jobId: string,
+    providerAddress: `0x${string}`,
+  ) {
     this.confirmCalls += 1;
     return {
       transactionHash: hex('4', 32),
-      blockNumber: '42',
+      blockNumber: '43',
       contractAddress: this.contractAddress,
-      escrow: {
-        jobKey: hex('3', 32),
-        buyer: this.signerAddress,
-        provider: null,
-        amountBaseUnits: quotedJob.budgetAmountBaseUnits,
-        deadline: quotedJob.agreement.deadline,
-        state: 1,
-        agreementHash: quotedJob.agreementHash,
-      },
+      escrow: { provider: providerAddress },
     };
   }
 }
 
-function createService(maxPerJobBaseUnits = '5000000000000000000') {
-  const gateway = new MemoryEscrowGateway();
-  const escrowRepository = new MemoryEscrowRepository(quotedJob);
+function createService(job: Job = fundedJob) {
+  const jobRepository = new AssignmentJobRepository(job);
+  const repository = new MemoryAssignmentRepository(jobRepository);
+  const gateway = new MemoryAssignmentGateway();
   let id = 0;
-  const service = new FundingService({
-    jobRepository: new FundingJobRepository(quotedJob),
-    escrowRepository,
+  const service = new AssignmentService({
+    jobRepository,
+    assignmentRepository: repository,
     gateway,
-    maxPerJobBaseUnits,
     clock: () => new Date('2026-08-23T00:00:02.000Z'),
     idGenerator: () => `0198d462-75c0-7000-8000-${String(++id).padStart(12, '0')}`,
   });
-  return { service, gateway, escrowRepository };
+  return { service, gateway };
 }
 
+const input = {
+  providerAgentId: 'erc8004:16602:456',
+  providerAddress: hex('6', 20),
+};
 const context = {
   actor: { type: 'operator' as const, id: 'operator_test' },
-  idempotencyKey: 'fund-job-idempotency-001',
+  idempotencyKey: 'assign-job-idempotency-001',
 };
 
-describe('FundingService', () => {
-  it('persists, broadcasts, confirms, and replays a single funding operation', async () => {
+describe('AssignmentService', () => {
+  it('opens, persists, broadcasts, confirms, and replays one provider assignment', async () => {
     const { service, gateway } = createService();
 
-    const funded = await service.fundJob(quotedJob.id, {}, context);
-    const replayed = await service.fundJob(quotedJob.id, {}, context);
+    const assigned = await service.assignProvider(fundedJob.id, input, context);
+    const replayed = await service.assignProvider(fundedJob.id, input, context);
 
-    expect(funded.job.state).toBe('FUNDED');
-    expect(funded.operation.status).toBe('CONFIRMED');
-    expect(funded.operation.serializedTransaction).toBeNull();
+    expect(assigned.job.state).toBe('ASSIGNED');
+    expect(assigned.operation.status).toBe('CONFIRMED');
+    expect(assigned.operation.serializedTransaction).toBeNull();
     expect(replayed.replayed).toBe(true);
     expect(gateway.prepareCalls).toBe(1);
     expect(gateway.broadcastCalls).toBe(1);
@@ -223,36 +238,26 @@ describe('FundingService', () => {
     const { service, gateway } = createService();
     gateway.failNextBroadcast = true;
 
-    await expect(service.fundJob(quotedJob.id, {}, context)).rejects.toBeInstanceOf(
+    await expect(service.assignProvider(fundedJob.id, input, context)).rejects.toBeInstanceOf(
       ChainOperationFailedError,
     );
-    const funded = await service.fundJob(quotedJob.id, {}, context);
+    const assigned = await service.assignProvider(fundedJob.id, input, context);
 
-    expect(funded.job.state).toBe('FUNDED');
+    expect(assigned.job.state).toBe('ASSIGNED');
     expect(gateway.prepareCalls).toBe(1);
     expect(gateway.broadcastCalls).toBe(2);
     expect(gateway.confirmCalls).toBe(1);
   });
 
-  it('enforces the server-side per-job spending limit before signing', async () => {
-    const { service, gateway } = createService('1000000000000000000');
-
-    await expect(service.fundJob(quotedJob.id, {}, context)).rejects.toBeInstanceOf(
-      SpendingPolicyExceededError,
-    );
-    expect(gateway.prepareCalls).toBe(0);
-  });
-
-  it('rejects provider assignment fields at the funding boundary', async () => {
-    const { service, gateway } = createService();
+  it('rejects the buyer identity or a provider outside a preselected agreement', async () => {
+    const { service, gateway } = createService({
+      ...fundedJob,
+      agreement: { ...fundedJob.agreement, providerAgentId: 'erc8004:16602:999' },
+    });
 
     await expect(
-      service.fundJob(
-        quotedJob.id,
-        { providerAddress: hex('6', 20) },
-        context,
-      ),
-    ).rejects.toMatchObject({ name: 'ZodError' });
+      service.assignProvider(fundedJob.id, input, context),
+    ).rejects.toBeInstanceOf(ProviderMismatchError);
     expect(gateway.prepareCalls).toBe(0);
   });
 });

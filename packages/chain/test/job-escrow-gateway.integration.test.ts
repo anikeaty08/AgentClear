@@ -204,7 +204,9 @@ describe('ViemJobEscrowGateway against Anvil', () => {
     expect(fundingTransaction.to).toBe(contractAddress);
     expect(fundingTransaction.value).toBe(amount);
 
-    const assignment = await gateway.assignProvider(jobId, provider);
+    const preparedAssignment = await gateway.prepareAssignProvider(jobId, provider);
+    await gateway.broadcastPreparedTransaction(preparedAssignment);
+    const assignment = await gateway.confirmAssignProvider(jobId, provider, preparedAssignment);
     expect(assignment.transactionHash).toMatch(/^0x[0-9a-f]{64}$/);
     const assignedEscrow = await gateway.getEscrow(jobId);
     expect(assignedEscrow.provider).toBe(getAddress(provider) as Address);

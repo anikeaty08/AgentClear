@@ -47,7 +47,7 @@ PostgresJobRepository
 
 After receipt confirmation, the adapter reads the escrow mapping and checks the buyer, amount, agreement hash, and state. A receipt alone is not treated as proof that the expected state was written. The adapter has been exercised against an ephemeral Anvil EVM; this is local integration evidence, not a 0G testnet deployment claim.
 
-`FundingService` and `PostgresEscrowRepository` make this boundary resumable:
+`FundingService` / `PostgresEscrowRepository` and `AssignmentService` / `PostgresAssignmentRepository` make both chain-write boundaries resumable:
 
 ```text
 CREATED -> PREPARED -> BROADCAST -> CONFIRMED
@@ -55,7 +55,11 @@ CREATED -> PREPARED -> BROADCAST -> CONFIRMED
              `-- retry same signed transaction hash --'
 ```
 
-The job stays `QUOTED` until receipt and state attestation both succeed. Confirmation updates the funding operation, escrow record, job state, and immutable state event in one database transaction. The serialized signed transaction is cleared after confirmation and is never returned by REST. A per-job base-unit spending ceiling and separate `jobs:fund` scope are enforced before signing.
+The job stays `QUOTED` until funding receipt and state attestation both succeed. Assignment first records `FUNDED -> OPEN`; it records `OPEN -> ASSIGNED` only after the provider stored in the escrow matches the request. Each confirmation updates the operation, escrow record, job state, and immutable state event in one database transaction. Serialized signed transactions are cleared after confirmation and are never returned by REST. A per-job base-unit spending ceiling and separate `jobs:fund` and `jobs:assign` scopes are enforced before signing.
+
+Funding and assignment share one in-process exclusive executor because the modular monolith uses one chain signer. PostgreSQL transaction advisory locking serializes operation creation across instances, and any unfinished signed funding or assignment blocks unrelated writes until it is resumed with its original idempotency key. This prevents local, restart, and multi-instance nonce reuse for the configured signer. Automated stale-operation reconciliation and hardened external signer custody remain release blockers.
+
+Provider agent identifiers are currently syntax-checked and agreement-constrained. Live ERC-8004 registry resolution is not implemented, so assignment proves the payment address was written to escrow but not yet that the supplied identity token exists.
 
 ## Minimal infrastructure choice
 

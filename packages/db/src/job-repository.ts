@@ -18,6 +18,7 @@ function rowToJob(row: typeof jobs.$inferSelect): Job {
   return {
     id: row.id,
     agreement: row.agreementSnapshot,
+    providerAgentId: row.providerAgentId,
     agreementHash: row.agreementHash as `0x${string}`,
     budgetAmountBaseUnits: row.budgetAmountBaseUnits,
     minimumScoreBps: row.minimumScoreBps,

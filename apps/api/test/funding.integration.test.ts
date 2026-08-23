@@ -7,10 +7,16 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { ViemJobEscrowGateway } from '@agentclear/chain';
 import {
   createDatabaseClient,
+  PostgresAssignmentRepository,
   PostgresEscrowRepository,
   PostgresJobRepository,
 } from '@agentclear/db';
-import { FundingService, JobService } from '@agentclear/domain';
+import {
+  AssignmentService,
+  FundingService,
+  InMemoryExclusiveExecutor,
+  JobService,
+} from '@agentclear/domain';
 import { sql } from 'drizzle-orm';
 import {
   bytesToHex,
@@ -20,6 +26,7 @@ import {
   http,
   parseEther,
   type Abi,
+  type Address,
   type Hex,
 } from 'viem';
 import { privateKeyToAccount, type PrivateKeyAccount } from 'viem/accounts';
@@ -103,6 +110,8 @@ describe.skipIf(databaseUrl === undefined)('AgentClear funding API with PostgreS
   let anvil: ChildProcess | undefined;
   let app: Awaited<ReturnType<typeof buildApp>>;
   let publicClient: ReturnType<typeof createPublicClient>;
+  let gateway: ViemJobEscrowGateway;
+  let providerAddress: Address;
 
   beforeAll(async () => {
     const port = await reservePort();
@@ -136,8 +145,11 @@ describe.skipIf(databaseUrl === undefined)('AgentClear funding API with PostgreS
     const transport = http(rpcUrl);
     publicClient = createPublicClient({ chain, transport });
     const unlockedWallet = createWalletClient({ chain, transport });
-    const [deployer] = await unlockedWallet.getAddresses();
-    if (deployer === undefined) throw new Error('Anvil did not expose a deployer account.');
+    const [deployer, provider] = await unlockedWallet.getAddresses();
+    if (deployer === undefined || provider === undefined) {
+      throw new Error('Anvil did not expose the required accounts.');
+    }
+    providerAddress = provider;
 
     const signer = createRandomSigner();
     const signerFundingHash = await unlockedWallet.sendTransaction({
@@ -161,7 +173,8 @@ describe.skipIf(databaseUrl === undefined)('AgentClear funding API with PostgreS
     }
 
     const jobRepository = new PostgresJobRepository(database.db);
-    const gateway = new ViemJobEscrowGateway({ rpcUrl, chain, contractAddress, account: signer });
+    gateway = new ViemJobEscrowGateway({ rpcUrl, chain, contractAddress, account: signer });
+    const chainWriteExecutor = new InMemoryExclusiveExecutor();
     app = await buildApp({
       jobRepository,
       jobService: new JobService({ repository: jobRepository }),
@@ -170,6 +183,13 @@ describe.skipIf(databaseUrl === undefined)('AgentClear funding API with PostgreS
         escrowRepository: new PostgresEscrowRepository(database.db),
         gateway,
         maxPerJobBaseUnits: parseEther('1').toString(),
+        executor: chainWriteExecutor,
+      }),
+      assignmentService: new AssignmentService({
+        jobRepository,
+        assignmentRepository: new PostgresAssignmentRepository(database.db),
+        gateway,
+        executor: chainWriteExecutor,
       }),
       chainHealth: async () => gateway.health(),
       authenticator: new BootstrapApiKeyAuthenticator(
@@ -182,7 +202,7 @@ describe.skipIf(databaseUrl === undefined)('AgentClear funding API with PostgreS
 
   beforeEach(async () => {
     await database.db.execute(
-      sql`truncate table escrow_funding_operations, escrows, idempotency_records, job_state_events, job_requirements, jobs`,
+      sql`truncate table job_assignment_operations, job_assignments, escrow_funding_operations, escrows, idempotency_records, job_state_events, job_requirements, jobs`,
     );
   });
 
@@ -192,7 +212,7 @@ describe.skipIf(databaseUrl === undefined)('AgentClear funding API with PostgreS
     if (anvil !== undefined && anvil.exitCode === null) anvil.kill();
   });
 
-  it('creates, quotes, and funds one job with an attested transaction-backed state change', async () => {
+  it('creates, quotes, funds, and assigns with attested transaction-backed state changes', async () => {
     const authorization = `Bearer ${apiKey}`;
     const created = await app.inject({
       method: 'POST',
@@ -253,11 +273,52 @@ describe.skipIf(databaseUrl === undefined)('AgentClear funding API with PostgreS
       hash: funded.json().data.funding.transactionHash as Hex,
     });
     expect(transaction.value).toBe(parseEther('0.5'));
+
+    const assignmentKey = randomUUID();
+    const assigned = await app.inject({
+      method: 'POST',
+      url: `/v1/jobs/${jobId}/assign`,
+      headers: { authorization, 'idempotency-key': assignmentKey },
+      payload: {
+        providerAgentId: 'erc8004:16602:456',
+        providerAddress,
+      },
+    });
+    const assignmentReplay = await app.inject({
+      method: 'POST',
+      url: `/v1/jobs/${jobId}/assign`,
+      headers: { authorization, 'idempotency-key': assignmentKey },
+      payload: {
+        providerAgentId: 'erc8004:16602:456',
+        providerAddress,
+      },
+    });
+
+    expect(assigned.statusCode).toBe(200);
+    expect(assigned.json().data.job).toMatchObject({
+      state: 'ASSIGNED',
+      providerAgentId: 'erc8004:16602:456',
+    });
+    expect(assigned.json().data.assignment).toMatchObject({
+      status: 'CONFIRMED',
+      providerAgentId: 'erc8004:16602:456',
+      providerAddress,
+      transactionHash: expect.stringMatching(/^0x[0-9a-f]{64}$/),
+      blockNumber: expect.any(String),
+    });
+    expect(assigned.body).not.toContain('serializedTransaction');
+    expect(assignmentReplay.headers['idempotency-replayed']).toBe('true');
+    expect(assignmentReplay.json().data.assignment.transactionHash).toBe(
+      assigned.json().data.assignment.transactionHash,
+    );
+
+    const chainEscrow = await gateway.getEscrow(jobId);
+    expect(chainEscrow.provider).toBe(providerAddress);
     const persisted = await database.db.execute<{ state: string; events: string }>(sql`
       select
         (select state::text from jobs where id = ${jobId}) as state,
         (select count(*)::text from job_state_events where job_id = ${jobId}) as events
     `);
-    expect(persisted.rows[0]).toEqual({ state: 'FUNDED', events: '3' });
+    expect(persisted.rows[0]).toEqual({ state: 'ASSIGNED', events: '5' });
   });
 });

@@ -2,7 +2,7 @@
 
 AgentClear is an outcome-verification and settlement layer for AI-agent commerce on 0G. It binds a structured task agreement to escrow, evidence-backed verification, settlement or refund, and transaction-backed agent reputation.
 
-The repository is under active development. The first real local vertical flow--create, quote, persist a signed escrow transaction, broadcast, attest, and transition to `FUNDED`--is implemented through REST, PostgreSQL, viem, and the native-asset `JobEscrow` contract. A 0G testnet deployment, provider submission, verification, Storage, Compute, settlement orchestration, ERC-8004 writes, MCP, and the operator UI remain in progress and are not simulated.
+The repository is under active development. The real local vertical flow currently reaches `ASSIGNED`: create and quote an agreement, persist and broadcast a signed funding transaction, attest the escrow, open the funded job, assign a provider through a second durable transaction, and attest the provider on-chain. It is implemented through REST, PostgreSQL, viem, and the native-asset `JobEscrow` contract. A 0G testnet deployment, provider submission, verification, Storage, Compute, settlement orchestration, ERC-8004 writes, MCP, and the operator UI remain in progress and are not simulated.
 
 ```mermaid
 flowchart LR
@@ -10,7 +10,7 @@ flowchart LR
   API --> Domain[Canonical agreement + state machine]
   Domain --> DB[(PostgreSQL)]
   DB --> Events[Immutable state events]
-  Domain --> Chain[JobEscrow / local EVM verified]
+  Domain --> Chain[Fund + assign / local EVM verified]
   Domain -. planned .-> Storage[0G Storage evidence]
   Domain -. planned .-> Compute[0G Compute verification]
   Chain -. planned .-> Receipt[Portable receipt + ERC-8004 reputation]
@@ -39,7 +39,7 @@ pnpm db:migrate
 pnpm dev
 ```
 
-The API listens on `http://127.0.0.1:3001` by default. Versioned routes require `Authorization: Bearer <BOOTSTRAP_API_KEY>`. Mutating job routes require an `Idempotency-Key` header. Funding remains disabled unless the complete optional chain group in `.env.example` is configured.
+The API listens on `http://127.0.0.1:3001` by default. Versioned routes require `Authorization: Bearer <BOOTSTRAP_API_KEY>`. Mutating job routes require an `Idempotency-Key` header. Funding and assignment remain disabled unless the complete optional chain group in `.env.example` is configured.
 
 ## Quality gates
 

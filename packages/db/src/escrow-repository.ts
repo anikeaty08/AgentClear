@@ -1,4 +1,5 @@
 import {
+  ChainSignerBusyError,
   IdempotencyKeyReusedError,
   InvalidJobTransitionError,
   JobFundingInProgressError,
@@ -17,6 +18,7 @@ import {
   escrowFundingOperations,
   escrows,
   idempotencyRecords,
+  jobAssignmentOperations,
   jobs,
   jobStateEvents,
 } from './schema.js';
@@ -51,6 +53,7 @@ function rowToJob(row: typeof jobs.$inferSelect) {
   return {
     id: row.id,
     agreement: row.agreementSnapshot,
+    providerAgentId: row.providerAgentId,
     agreementHash: row.agreementHash as `0x${string}`,
     budgetAmountBaseUnits: row.budgetAmountBaseUnits,
     minimumScoreBps: row.minimumScoreBps,
@@ -66,6 +69,9 @@ export class PostgresEscrowRepository implements EscrowRepository {
 
   public async beginFunding(input: BeginFundingInput): Promise<BeginFundingResult> {
     return this.database.transaction(async (transaction) => {
+      await transaction.execute(
+        sql`select pg_advisory_xact_lock(hashtext('agentclear:chain-signer'))`,
+      );
       const createdAt = new Date(input.operation.createdAt);
       const [claim] = await transaction
         .insert(idempotencyRecords)
@@ -140,6 +146,26 @@ export class PostgresEscrowRepository implements EscrowRepository {
         .limit(1);
       if (activeOperation !== undefined) {
         throw new JobFundingInProgressError(input.operation.jobId);
+      }
+      const [activeAssignment] = await transaction
+        .select({ id: jobAssignmentOperations.id })
+        .from(jobAssignmentOperations)
+        .where(
+          inArray(jobAssignmentOperations.status, ['CREATED', 'PREPARED', 'BROADCAST']),
+        )
+        .limit(1);
+      const [otherFunding] = await transaction
+        .select({ id: escrowFundingOperations.id })
+        .from(escrowFundingOperations)
+        .where(
+          and(
+            inArray(escrowFundingOperations.status, ['CREATED', 'PREPARED', 'BROADCAST']),
+            sql`${escrowFundingOperations.jobId} <> ${input.operation.jobId}`,
+          ),
+        )
+        .limit(1);
+      if (activeAssignment !== undefined || otherFunding !== undefined) {
+        throw new ChainSignerBusyError();
       }
 
       const [operation] = await transaction

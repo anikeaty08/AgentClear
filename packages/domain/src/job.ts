@@ -49,6 +49,7 @@ export type JobAgreement = CreateJobInput & {
 export type Job = {
   id: string;
   agreement: JobAgreement;
+  providerAgentId: string | null;
   agreementHash: `0x${string}`;
   budgetAmountBaseUnits: string;
   minimumScoreBps: number;
@@ -75,4 +76,3 @@ export type JobActor = {
   type: JobStateEvent['actorType'];
   id: string;
 };
-

@@ -1,6 +1,6 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 
-export const AUTH_SCOPES = ['jobs:read', 'jobs:write', 'jobs:fund'] as const;
+export const AUTH_SCOPES = ['jobs:read', 'jobs:write', 'jobs:fund', 'jobs:assign'] as const;
 export type AuthScope = (typeof AUTH_SCOPES)[number];
 
 export type AuthPrincipal = {

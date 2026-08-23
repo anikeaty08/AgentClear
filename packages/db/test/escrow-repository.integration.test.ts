@@ -70,7 +70,7 @@ describe.skipIf(databaseUrl === undefined)('PostgresEscrowRepository', () => {
 
   beforeEach(async () => {
     await client.db.execute(
-      sql`truncate table escrow_funding_operations, escrows, idempotency_records, job_state_events, job_requirements, jobs`,
+      sql`truncate table job_assignment_operations, job_assignments, escrow_funding_operations, escrows, idempotency_records, job_state_events, job_requirements, jobs`,
     );
   });
 

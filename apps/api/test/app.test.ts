@@ -71,7 +71,7 @@ const authenticator: Authenticator = {
       ? {
           id: 'operator_test',
           kind: 'operator',
-          scopes: new Set(['jobs:read', 'jobs:write', 'jobs:fund']),
+          scopes: new Set(['jobs:read', 'jobs:write', 'jobs:fund', 'jobs:assign']),
         }
       : null;
   },
@@ -210,6 +210,25 @@ describe('AgentClear API', () => {
         'idempotency-key': 'fund-job-disabled-001',
       },
       payload: {},
+    });
+
+    expect(response.statusCode).toBe(503);
+    expect(response.json().error.code).toBe('CHAIN_UNAVAILABLE');
+  });
+
+  it('reports an explicit degraded state when chain assignment is not configured', async () => {
+    const app = await createTestApp();
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/jobs/0198d462-75c0-7000-8000-000000000001/assign',
+      headers: {
+        authorization: 'Bearer valid-test-api-key',
+        'idempotency-key': 'assign-job-disabled-001',
+      },
+      payload: {
+        providerAgentId: 'erc8004:16602:456',
+        providerAddress: '0x1111111111111111111111111111111111111111',
+      },
     });
 
     expect(response.statusCode).toBe(503);

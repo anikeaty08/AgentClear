@@ -187,6 +187,53 @@ export const escrowFundingOperations = pgTable(
   ],
 );
 
+export const jobAssignments = pgTable('job_assignments', {
+  jobId: uuid('job_id')
+    .primaryKey()
+    .references(() => jobs.id, { onDelete: 'restrict' }),
+  providerAgentId: text('provider_agent_id').notNull(),
+  providerAddress: varchar('provider_address', { length: 42 }).notNull(),
+  transactionHash: varchar('transaction_hash', { length: 66 }).notNull().unique(),
+  blockNumber: numeric('block_number', { precision: 78, scale: 0 }).notNull(),
+  assignedAt: timestamp('assigned_at', { withTimezone: true, mode: 'date' }).notNull(),
+});
+
+export const jobAssignmentOperations = pgTable(
+  'job_assignment_operations',
+  {
+    id: uuid('id').primaryKey(),
+    jobId: uuid('job_id')
+      .notNull()
+      .references(() => jobs.id, { onDelete: 'restrict' }),
+    status: fundingOperationStatusEnum('status').notNull(),
+    chainId: integer('chain_id').notNull(),
+    contractAddress: varchar('contract_address', { length: 42 }).notNull(),
+    signerAddress: varchar('signer_address', { length: 42 }).notNull(),
+    providerAgentId: text('provider_agent_id').notNull(),
+    providerAddress: varchar('provider_address', { length: 42 }).notNull(),
+    jobKey: varchar('job_key', { length: 66 }),
+    serializedTransaction: text('serialized_transaction'),
+    transactionHash: varchar('transaction_hash', { length: 66 }),
+    blockNumber: numeric('block_number', { precision: 78, scale: 0 }),
+    idempotencyScope: varchar('idempotency_scope', { length: 255 }).notNull(),
+    idempotencyKey: varchar('idempotency_key', { length: 255 }).notNull(),
+    requestHash: varchar('request_hash', { length: 66 }).notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull(),
+  },
+  (table) => [
+    unique('job_assignment_operations_idempotency_unique').on(
+      table.idempotencyScope,
+      table.idempotencyKey,
+    ),
+    unique('job_assignment_operations_transaction_hash_unique').on(table.transactionHash),
+    uniqueIndex('job_assignment_operations_active_job_unique')
+      .on(table.jobId)
+      .where(sql`${table.status} in ('CREATED', 'PREPARED', 'BROADCAST')`),
+    index('job_assignment_operations_status_updated_at_idx').on(table.status, table.updatedAt),
+  ],
+);
+
 export const databaseSchema = {
   jobs,
   jobRequirements,
@@ -194,4 +241,6 @@ export const databaseSchema = {
   idempotencyRecords,
   escrows,
   escrowFundingOperations,
+  jobAssignments,
+  jobAssignmentOperations,
 };

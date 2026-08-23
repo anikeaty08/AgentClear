@@ -51,6 +51,7 @@ export class JobService {
     const job: Job = {
       id: jobId,
       agreement,
+      providerAgentId: normalizedInput.providerAgentId ?? null,
       agreementHash: sha256Commitment(agreement),
       budgetAmountBaseUnits: decimalToBaseUnits(normalizedInput.budget.maxAmount, 18),
       minimumScoreBps,
