@@ -21,6 +21,7 @@ import {
   jobAssignmentOperations,
   jobs,
   jobStateEvents,
+  submissionOperations,
 } from './schema.js';
 
 function rowToFundingOperation(
@@ -70,7 +71,7 @@ export class PostgresEscrowRepository implements EscrowRepository {
   public async beginFunding(input: BeginFundingInput): Promise<BeginFundingResult> {
     return this.database.transaction(async (transaction) => {
       await transaction.execute(
-        sql`select pg_advisory_xact_lock(hashtext('agentclear:chain-signer'))`,
+        sql`select pg_advisory_xact_lock(hashtext('agentclear:chain-signer-state'))`,
       );
       const createdAt = new Date(input.operation.createdAt);
       const [claim] = await transaction
@@ -164,7 +165,16 @@ export class PostgresEscrowRepository implements EscrowRepository {
           ),
         )
         .limit(1);
-      if (activeAssignment !== undefined || otherFunding !== undefined) {
+      const [activeSubmission] = await transaction
+        .select({ id: submissionOperations.id })
+        .from(submissionOperations)
+        .where(inArray(submissionOperations.status, ['CREATED', 'STORING']))
+        .limit(1);
+      if (
+        activeAssignment !== undefined
+        || otherFunding !== undefined
+        || activeSubmission !== undefined
+      ) {
         throw new ChainSignerBusyError();
       }
 

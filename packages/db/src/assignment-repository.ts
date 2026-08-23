@@ -22,6 +22,7 @@ import {
   jobAssignments,
   jobs,
   jobStateEvents,
+  submissionOperations,
 } from './schema.js';
 
 function rowToAssignmentOperation(
@@ -69,7 +70,7 @@ export class PostgresAssignmentRepository implements AssignmentRepository {
   public async beginAssignment(input: BeginAssignmentInput): Promise<AssignmentResult> {
     return this.database.transaction(async (transaction) => {
       await transaction.execute(
-        sql`select pg_advisory_xact_lock(hashtext('agentclear:chain-signer'))`,
+        sql`select pg_advisory_xact_lock(hashtext('agentclear:chain-signer-state'))`,
       );
       const createdAt = new Date(input.operation.createdAt);
       const [claim] = await transaction
@@ -177,7 +178,16 @@ export class PostgresAssignmentRepository implements AssignmentRepository {
           ),
         )
         .limit(1);
-      if (activeFunding !== undefined || otherAssignment !== undefined) {
+      const [activeSubmission] = await transaction
+        .select({ id: submissionOperations.id })
+        .from(submissionOperations)
+        .where(inArray(submissionOperations.status, ['CREATED', 'STORING']))
+        .limit(1);
+      if (
+        activeFunding !== undefined
+        || otherAssignment !== undefined
+        || activeSubmission !== undefined
+      ) {
         throw new ChainSignerBusyError();
       }
 

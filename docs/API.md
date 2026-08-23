@@ -12,7 +12,7 @@ Mutating routes require an `Idempotency-Key` containing 8-255 ASCII letters, dig
 
 ## Health
 
-`GET /health` reports process liveness. `GET /ready` verifies PostgreSQL and, when configured, the chain ID and escrow bytecode. A configured but unavailable chain makes readiness fail without exposing credentials.
+`GET /health` reports process liveness. `GET /ready` verifies PostgreSQL and, when configured, the chain ID, escrow bytecode, and 0G Storage indexer. A configured but unavailable integration makes readiness fail without exposing credentials.
 
 ## Create a job
 
@@ -75,6 +75,25 @@ The provider identity cannot equal the buyer identity and must match `agreement.
 
 The `erc8004:*` value is format-validated but is not yet resolved against a live ERC-8004 IdentityRegistry. That adapter remains a release blocker, so the API does not claim the identity exists on-chain yet.
 
+## Submit a result
+
+`POST /v1/jobs/:id/submissions` requires `jobs:submit`, an idempotency key, the configured 0G Storage adapter, and a job assigned to the authenticated provider agent.
+
+```json
+{
+  "result": {
+    "patch": "diff --git ...",
+    "summary": "Implemented and tested the sorter."
+  }
+}
+```
+
+The service creates a canonical JSON evidence manifest containing the agreement hash, provider identity, declared deliverable metadata, result, and submission time. It persists the exact bytes and SHA-256 commitment before the external upload, uploads them through 0G Storage, retrieves the root with Merkle proofs enabled, byte-compares the result, and only then records `IN_PROGRESS -> SUBMITTED`. A retry with the same idempotency key resumes the persisted bytes instead of creating different evidence. Confirmed payload bytes are cleared from the operation record; the durable submission and artifact keep the content hash, 0G root, transaction metadata, and byte size.
+
+The operator bootstrap key cannot submit on behalf of a provider. The temporary provider bootstrap credential must be distinct and its configured agent ID must exactly equal the assigned provider identity. This is a development authentication boundary; durable multi-tenant agent credentials remain pending.
+
+`GET /v1/jobs/:id/submissions` requires `jobs:read` and returns confirmed submission/artifact metadata without returning the persisted evidence payload.
+
 ## Get a job
 
 `GET /v1/jobs/:id` requires `jobs:read` and returns the stored canonical agreement, current provider identity when assigned, agreement hash, internal base-unit budget, state, version, and timestamps.
@@ -91,4 +110,4 @@ The `erc8004:*` value is format-validated but is not yet resolved against a live
 }
 ```
 
-Stable codes currently include `AUTHENTICATION_REQUIRED`, `INSUFFICIENT_SCOPE`, `INVALID_REQUEST`, `RATE_LIMIT_EXCEEDED`, `JOB_NOT_FOUND`, `JOB_DEADLINE_NOT_FUTURE`, `INVALID_JOB_TRANSITION`, `IDEMPOTENCY_KEY_REUSED`, `CHAIN_UNAVAILABLE`, `CHAIN_OPERATION_FAILED`, `CHAIN_SIGNER_BUSY`, `JOB_FUNDING_IN_PROGRESS`, `JOB_ASSIGNMENT_IN_PROGRESS`, `PROVIDER_MISMATCH`, `SPENDING_POLICY_EXCEEDED`, and `INTERNAL_ERROR`.
+Stable codes currently include `AUTHENTICATION_REQUIRED`, `INSUFFICIENT_SCOPE`, `INVALID_REQUEST`, `RATE_LIMIT_EXCEEDED`, `JOB_NOT_FOUND`, `JOB_DEADLINE_NOT_FUTURE`, `INVALID_JOB_TRANSITION`, `IDEMPOTENCY_KEY_REUSED`, `CHAIN_UNAVAILABLE`, `CHAIN_OPERATION_FAILED`, `CHAIN_SIGNER_BUSY`, `JOB_FUNDING_IN_PROGRESS`, `JOB_ASSIGNMENT_IN_PROGRESS`, `PROVIDER_MISMATCH`, `PROVIDER_NOT_AUTHORIZED`, `SUBMISSION_IN_PROGRESS`, `SUBMISSION_TOO_LARGE`, `STORAGE_UNAVAILABLE`, `STORAGE_OPERATION_FAILED`, `SPENDING_POLICY_EXCEEDED`, and `INTERNAL_ERROR`.

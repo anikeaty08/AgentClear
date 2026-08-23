@@ -2,6 +2,8 @@ import {
   IdempotencyKeyReusedError,
   InvalidJobTransitionError,
   JobService,
+  SubmissionQueryService,
+  type SubmissionRepository,
   type CreateJobPersistenceInput,
   type CreateJobPersistenceResult,
   type Job,
@@ -71,7 +73,13 @@ const authenticator: Authenticator = {
       ? {
           id: 'operator_test',
           kind: 'operator',
-          scopes: new Set(['jobs:read', 'jobs:write', 'jobs:fund', 'jobs:assign']),
+          scopes: new Set([
+            'jobs:read',
+            'jobs:write',
+            'jobs:fund',
+            'jobs:assign',
+            'jobs:submit',
+          ]),
         }
       : null;
   },
@@ -96,12 +104,18 @@ const apps: Awaited<ReturnType<typeof buildApp>>[] = [];
 
 async function createTestApp() {
   const repository = new MemoryJobRepository();
+  const submissionRepository = {
+    async listByJob() {
+      return [];
+    },
+  } as unknown as SubmissionRepository;
   const app = await buildApp({
     jobRepository: repository,
     jobService: new JobService({
       repository,
       clock: () => new Date('2026-08-23T00:00:00.000Z'),
     }),
+    submissionQueryService: new SubmissionQueryService(repository, submissionRepository),
     authenticator,
   });
   apps.push(app);
@@ -233,6 +247,22 @@ describe('AgentClear API', () => {
 
     expect(response.statusCode).toBe(503);
     expect(response.json().error.code).toBe('CHAIN_UNAVAILABLE');
+  });
+
+  it('rejects provider submission before mutation when 0G Storage is not configured', async () => {
+    const app = await createTestApp();
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/jobs/0198d462-75c0-7000-8000-000000000001/submissions',
+      headers: {
+        authorization: 'Bearer valid-test-api-key',
+        'idempotency-key': 'submit-job-disabled-001',
+      },
+      payload: { result: { answer: 42 } },
+    });
+
+    expect(response.statusCode).toBe(503);
+    expect(response.json().error.code).toBe('STORAGE_UNAVAILABLE');
   });
 
   it('returns a stable validation error without a stack trace', async () => {

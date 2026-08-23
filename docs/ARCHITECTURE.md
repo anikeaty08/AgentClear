@@ -57,9 +57,22 @@ CREATED -> PREPARED -> BROADCAST -> CONFIRMED
 
 The job stays `QUOTED` until funding receipt and state attestation both succeed. Assignment first records `FUNDED -> OPEN`; it records `OPEN -> ASSIGNED` only after the provider stored in the escrow matches the request. Each confirmation updates the operation, escrow record, job state, and immutable state event in one database transaction. Serialized signed transactions are cleared after confirmation and are never returned by REST. A per-job base-unit spending ceiling and separate `jobs:fund` and `jobs:assign` scopes are enforced before signing.
 
-Funding and assignment share one in-process exclusive executor because the modular monolith uses one chain signer. PostgreSQL transaction advisory locking serializes operation creation across instances, and any unfinished signed funding or assignment blocks unrelated writes until it is resumed with its original idempotency key. This prevents local, restart, and multi-instance nonce reuse for the configured signer. Automated stale-operation reconciliation and hardened external signer custody remain release blockers.
+Funding, assignment, and 0G Storage submission reuse one configured signer. A PostgreSQL session advisory lock spans each complete external operation, including preparation, persistence, broadcast/upload, confirmation, and database finalization, so independent API instances cannot concurrently consume its nonce. Repository transactions take a separate state lock, and any unfinished signed or storage operation blocks unrelated writes until it is resumed with its original idempotency key. This protects local, restart, and multi-instance recovery. Automated stale-operation reconciliation and hardened external signer custody remain release blockers.
 
 Provider agent identifiers are currently syntax-checked and agreement-constrained. Live ERC-8004 registry resolution is not implemented, so assignment proves the payment address was written to escrow but not yet that the supplied identity token exists.
+
+## Provider submission and evidence boundary
+
+`SubmissionService` authorizes the exact assigned provider identity and constructs one canonical evidence manifest. `PostgresSubmissionRepository` moves the job from `ASSIGNED` or `RETRY` to `IN_PROGRESS`, persists the exact manifest bytes before external I/O, and makes retries use those same bytes. `ZeroGStorageClient` computes the Merkle root, uploads with finalized-content reuse enabled, proof-downloads the root, and byte-compares the retrieved content before confirmation.
+
+```text
+ASSIGNED -> IN_PROGRESS -> SUBMITTED
+                 |
+                 `-> durable CREATED -> STORING -> CONFIRMED operation
+                                      -> submission + artifact + audit event
+```
+
+The REST response contains evidence metadata, never the stored canonical payload. Confirmation clears the payload from the operation row. The production adapter is implemented against the current official SDK, but no live 0G Storage call has been exercised from this repository yet; automated API integration uses a controlled port implementation and does not claim network behavior.
 
 ## Minimal infrastructure choice
 
@@ -70,8 +83,8 @@ PostgreSQL is currently the only stateful dependency. Redis was intentionally om
 The next boundaries will preserve the same domain-service pattern:
 
 ```text
-agreement -> 0G Chain escrow -> submission -> sandbox verification
-          -> 0G Storage evidence -> 0G Compute rubric signal
+agreement -> 0G Chain escrow -> 0G Storage submission evidence
+          -> sandbox verification -> 0G Compute rubric signal
           -> outcome anchor -> settle/refund -> ERC-8004 adapter -> receipt
 ```
 

@@ -5,19 +5,23 @@ import {
 } from '@agentclear/chain';
 import {
   createDatabaseClient,
+  PostgresExclusiveExecutor,
   PostgresAssignmentRepository,
   PostgresEscrowRepository,
   PostgresJobRepository,
+  PostgresSubmissionRepository,
 } from '@agentclear/db';
 import {
   AssignmentService,
   FundingService,
-  InMemoryExclusiveExecutor,
   JobService,
+  SubmissionQueryService,
+  SubmissionService,
 } from '@agentclear/domain';
+import { ZeroGStorageClient } from '@agentclear/storage';
 
 import { buildApp } from './app.js';
-import { BootstrapApiKeyAuthenticator } from './auth.js';
+import { BootstrapApiKeyAuthenticator, CompositeAuthenticator } from './auth.js';
 
 const config = loadRuntimeConfig();
 const database = createDatabaseClient(config.databaseUrl);
@@ -41,7 +45,7 @@ const chain =
         privateKey: config.chain.signerPrivateKey,
         confirmations: config.chain.confirmations,
       });
-const chainWriteExecutor = new InMemoryExclusiveExecutor();
+const chainWriteExecutor = new PostgresExclusiveExecutor(database.pool);
 const fundingService =
   config.chain === undefined || chain === undefined
     ? undefined
@@ -61,19 +65,56 @@ const assignmentService =
         gateway: chain,
         executor: chainWriteExecutor,
       });
-const authenticator = new BootstrapApiKeyAuthenticator(
-  config.auth.bootstrapApiKey,
-  config.auth.apiKeyPepper,
-  config.auth.bootstrapPrincipalId,
-);
+const storage =
+  config.storage === undefined
+    ? undefined
+    : new ZeroGStorageClient({
+        rpcUrl: config.storage.rpcUrl,
+        indexerUrl: config.storage.indexerUrl,
+        signerPrivateKey: config.storage.signerPrivateKey,
+        maxPayloadBytes: config.storage.maxPayloadBytes,
+      });
+const submissionRepository = new PostgresSubmissionRepository(database.db);
+const submissionService =
+  config.storage === undefined || storage === undefined
+    ? undefined
+    : new SubmissionService({
+        jobRepository,
+        submissionRepository,
+        storage,
+        maxPayloadBytes: config.storage.maxPayloadBytes,
+        executor: chainWriteExecutor,
+      });
+const authenticators = [
+  new BootstrapApiKeyAuthenticator(
+    config.auth.bootstrapApiKey,
+    config.auth.apiKeyPepper,
+    config.auth.bootstrapPrincipalId,
+  ),
+];
+if (config.auth.providerBootstrap !== undefined) {
+  authenticators.push(
+    new BootstrapApiKeyAuthenticator(
+      config.auth.providerBootstrap.apiKey,
+      config.auth.apiKeyPepper,
+      config.auth.providerBootstrap.agentId,
+      'agent',
+      new Set(['jobs:read', 'jobs:submit']),
+    ),
+  );
+}
+const authenticator = new CompositeAuthenticator(authenticators);
 
 const app = await buildApp({
   jobService,
   jobRepository,
   authenticator,
+  submissionQueryService: new SubmissionQueryService(jobRepository, submissionRepository),
   ...(fundingService === undefined ? {} : { fundingService }),
   ...(assignmentService === undefined ? {} : { assignmentService }),
+  ...(submissionService === undefined ? {} : { submissionService }),
   ...(chain === undefined ? {} : { chainHealth: async () => chain.health() }),
+  ...(storage === undefined ? {} : { storageHealth: async () => storage.health() }),
   logger: {
     level: config.api.logLevel,
     redact: {

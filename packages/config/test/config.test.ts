@@ -68,4 +68,48 @@ describe('loadRuntimeConfig', () => {
       }),
     ).toThrow('Local development chain settings are forbidden in production.');
   });
+
+  it('requires a complete, distinct provider bootstrap credential pair', () => {
+    expect(() =>
+      loadRuntimeConfig({
+        ...validEnvironment,
+        PROVIDER_BOOTSTRAP_API_KEY: 'c'.repeat(32),
+      }),
+    ).toThrow('Provider bootstrap key and agent ID must be configured together.');
+    expect(() =>
+      loadRuntimeConfig({
+        ...validEnvironment,
+        PROVIDER_BOOTSTRAP_API_KEY: validEnvironment.BOOTSTRAP_API_KEY,
+        PROVIDER_BOOTSTRAP_AGENT_ID: 'erc8004:16602:456',
+      }),
+    ).toThrow('Operator and provider bootstrap keys must be distinct.');
+  });
+
+  it('derives 0G Storage signer settings only from a complete chain configuration', () => {
+    expect(() =>
+      loadRuntimeConfig({
+        ...validEnvironment,
+        STORAGE_INDEXER_URL: 'https://indexer-storage-testnet-turbo.0g.ai',
+      }),
+    ).toThrow('0G Storage requires the complete chain signer configuration.');
+
+    const config = loadRuntimeConfig({
+      ...validEnvironment,
+      CHAIN_RPC_URL: 'http://127.0.0.1:8545',
+      CHAIN_ID: '31337',
+      CHAIN_NAME: 'AgentClear Anvil',
+      CHAIN_NATIVE_CURRENCY_SYMBOL: 'A0GI',
+      JOB_ESCROW_ADDRESS: `0x${'1'.repeat(40)}`,
+      CHAIN_SIGNER_PRIVATE_KEY: `0x${'2'.repeat(64)}`,
+      CHAIN_MAX_PER_JOB_BASE_UNITS: '5000000000000000000',
+      STORAGE_INDEXER_URL: 'http://127.0.0.1:5678',
+      STORAGE_MAX_PAYLOAD_BYTES: '8192',
+    });
+
+    expect(config.storage).toMatchObject({
+      rpcUrl: 'http://127.0.0.1:8545',
+      indexerUrl: 'http://127.0.0.1:5678',
+      maxPayloadBytes: 8_192,
+    });
+  });
 });

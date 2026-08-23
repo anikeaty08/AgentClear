@@ -3,6 +3,7 @@ import { JOB_STATES } from '@agentclear/domain';
 import { sql } from 'drizzle-orm';
 import {
   boolean,
+  bigint,
   index,
   integer,
   jsonb,
@@ -39,6 +40,11 @@ export const fundingOperationStatusEnum = pgEnum('funding_operation_status', [
   'CREATED',
   'PREPARED',
   'BROADCAST',
+  'CONFIRMED',
+]);
+export const submissionOperationStatusEnum = pgEnum('submission_operation_status', [
+  'CREATED',
+  'STORING',
   'CONFIRMED',
 ]);
 
@@ -234,6 +240,76 @@ export const jobAssignmentOperations = pgTable(
   ],
 );
 
+export const submissionOperations = pgTable(
+  'submission_operations',
+  {
+    id: uuid('id').primaryKey(),
+    submissionId: uuid('submission_id').notNull().unique(),
+    jobId: uuid('job_id')
+      .notNull()
+      .references(() => jobs.id, { onDelete: 'restrict' }),
+    status: submissionOperationStatusEnum('status').notNull(),
+    providerAgentId: text('provider_agent_id').notNull(),
+    canonicalPayload: text('canonical_payload'),
+    submissionHash: varchar('submission_hash', { length: 66 }).notNull(),
+    storageRootHash: varchar('storage_root_hash', { length: 66 }),
+    storageTransactionHash: varchar('storage_transaction_hash', { length: 66 }),
+    storageTransactionSequence: bigint('storage_transaction_sequence', { mode: 'number' }),
+    sizeBytes: integer('size_bytes').notNull(),
+    idempotencyScope: varchar('idempotency_scope', { length: 255 }).notNull(),
+    idempotencyKey: varchar('idempotency_key', { length: 255 }).notNull(),
+    requestHash: varchar('request_hash', { length: 66 }).notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull(),
+  },
+  (table) => [
+    unique('submission_operations_idempotency_unique').on(
+      table.idempotencyScope,
+      table.idempotencyKey,
+    ),
+    uniqueIndex('submission_operations_active_job_unique')
+      .on(table.jobId)
+      .where(sql`${table.status} in ('CREATED', 'STORING')`),
+    index('submission_operations_status_updated_at_idx').on(table.status, table.updatedAt),
+  ],
+);
+
+export const submissions = pgTable(
+  'submissions',
+  {
+    id: uuid('id').primaryKey(),
+    jobId: uuid('job_id')
+      .notNull()
+      .references(() => jobs.id, { onDelete: 'restrict' }),
+    providerAgentId: text('provider_agent_id').notNull(),
+    submissionHash: varchar('submission_hash', { length: 66 }).notNull(),
+    contentType: varchar('content_type', { length: 100 }).notNull(),
+    storageRootHash: varchar('storage_root_hash', { length: 66 }).notNull(),
+    storageTransactionHash: varchar('storage_transaction_hash', { length: 66 }),
+    storageTransactionSequence: bigint('storage_transaction_sequence', {
+      mode: 'number',
+    }).notNull(),
+    sizeBytes: integer('size_bytes').notNull(),
+    submittedAt: timestamp('submitted_at', { withTimezone: true, mode: 'date' }).notNull(),
+  },
+  (table) => [
+    index('submissions_job_submitted_at_idx').on(table.jobId, table.submittedAt),
+    index('submissions_storage_root_hash_idx').on(table.storageRootHash),
+  ],
+);
+
+export const submissionArtifacts = pgTable('submission_artifacts', {
+  id: uuid('id').primaryKey(),
+  submissionId: uuid('submission_id')
+    .notNull()
+    .references(() => submissions.id, { onDelete: 'restrict' }),
+  kind: varchar('kind', { length: 32 }).notNull(),
+  contentHash: varchar('content_hash', { length: 66 }).notNull(),
+  storageRootHash: varchar('storage_root_hash', { length: 66 }).notNull(),
+  sizeBytes: integer('size_bytes').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull(),
+});
+
 export const databaseSchema = {
   jobs,
   jobRequirements,
@@ -243,4 +319,7 @@ export const databaseSchema = {
   escrowFundingOperations,
   jobAssignments,
   jobAssignmentOperations,
+  submissionOperations,
+  submissions,
+  submissionArtifacts,
 };

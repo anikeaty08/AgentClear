@@ -6,6 +6,8 @@ import type {
   FundingService,
   JobRepository,
   JobService,
+  SubmissionQueryService,
+  SubmissionService,
 } from '@agentclear/domain';
 import { DomainError } from '@agentclear/domain';
 import Fastify, { LogController, type FastifyRequest, type FastifyServerOptions } from 'fastify';
@@ -52,7 +54,10 @@ export type BuildAppOptions = {
   authenticator: Authenticator;
   fundingService?: FundingService;
   assignmentService?: AssignmentService;
+  submissionService?: SubmissionService;
+  submissionQueryService: SubmissionQueryService;
   chainHealth?: () => Promise<unknown>;
+  storageHealth?: () => Promise<unknown>;
   logger?: FastifyServerOptions['logger'];
 };
 
@@ -129,11 +134,13 @@ export async function buildApp(options: BuildAppOptions) {
     try {
       await options.jobRepository.ping();
       if (options.chainHealth !== undefined) await options.chainHealth();
+      if (options.storageHealth !== undefined) await options.storageHealth();
       return {
         status: 'ready',
         dependencies: {
           database: 'up',
           chain: options.chainHealth === undefined ? 'disabled' : 'up',
+          storage: options.storageHealth === undefined ? 'disabled' : 'up',
         },
       };
     } catch (error) {
@@ -249,6 +256,37 @@ export async function buildApp(options: BuildAppOptions) {
         },
         meta: { requestId: request.id, replayed: result.replayed },
       });
+  });
+
+  app.post('/v1/jobs/:id/submissions', async (request, reply) => {
+    const principal = requireScope(request, 'jobs:submit');
+    const idempotencyKey = idempotencyKeySchema.parse(request.headers['idempotency-key']);
+    const { id } = jobIdParamsSchema.parse(request.params);
+    if (options.submissionService === undefined) {
+      throw new ApiError(
+        'STORAGE_UNAVAILABLE',
+        'Provider submission is disabled because 0G Storage is not configured.',
+        503,
+      );
+    }
+    const result = await options.submissionService.submitResult(id, request.body, {
+      actor: { type: principal.kind === 'agent' ? 'agent' : 'operator', id: principal.id },
+      idempotencyKey,
+    });
+    return reply
+      .status(201)
+      .header('idempotency-replayed', result.replayed ? 'true' : 'false')
+      .send({
+        data: { job: result.job, submission: result.submission },
+        meta: { requestId: request.id, replayed: result.replayed },
+      });
+  });
+
+  app.get('/v1/jobs/:id/submissions', async (request) => {
+    requireScope(request, 'jobs:read');
+    const { id } = jobIdParamsSchema.parse(request.params);
+    const submissions = await options.submissionQueryService.listSubmissions(id);
+    return { data: { submissions }, meta: { requestId: request.id } };
   });
 
   return app;

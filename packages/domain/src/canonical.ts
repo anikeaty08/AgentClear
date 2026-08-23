@@ -1,7 +1,10 @@
 import { createHash } from 'node:crypto';
 
-type JsonPrimitive = boolean | null | number | string;
-type JsonValue = JsonPrimitive | readonly JsonValue[] | { readonly [key: string]: JsonValue | undefined };
+export type JsonPrimitive = boolean | null | number | string;
+export type JsonValue =
+  | JsonPrimitive
+  | readonly JsonValue[]
+  | { readonly [key: string]: JsonValue | undefined };
 
 function normalizeJson(value: JsonValue): JsonValue {
   if (Array.isArray(value)) {
@@ -32,3 +35,6 @@ export function sha256Commitment(value: JsonValue): `0x${string}` {
   return `0x${createHash('sha256').update(canonicalJson(value), 'utf8').digest('hex')}`;
 }
 
+export function sha256Bytes(value: Uint8Array): `0x${string}` {
+  return `0x${createHash('sha256').update(value).digest('hex')}`;
+}

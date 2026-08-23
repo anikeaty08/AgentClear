@@ -8,7 +8,11 @@ export type DomainErrorCode =
   | 'CHAIN_SIGNER_BUSY'
   | 'SPENDING_POLICY_EXCEEDED'
   | 'JOB_ASSIGNMENT_IN_PROGRESS'
-  | 'PROVIDER_MISMATCH';
+  | 'PROVIDER_MISMATCH'
+  | 'PROVIDER_NOT_AUTHORIZED'
+  | 'SUBMISSION_IN_PROGRESS'
+  | 'SUBMISSION_TOO_LARGE'
+  | 'STORAGE_OPERATION_FAILED';
 
 export class DomainError extends Error {
   public constructor(
@@ -105,6 +109,46 @@ export class ProviderMismatchError extends DomainError {
       'PROVIDER_MISMATCH',
       'The provider does not match the job agreement or buyer/provider separation rules.',
       409,
+    );
+  }
+}
+
+export class ProviderNotAuthorizedError extends DomainError {
+  public constructor() {
+    super(
+      'PROVIDER_NOT_AUTHORIZED',
+      'Only the provider agent assigned to this job may submit its result.',
+      403,
+    );
+  }
+}
+
+export class SubmissionInProgressError extends DomainError {
+  public constructor(jobId: string) {
+    super(
+      'SUBMISSION_IN_PROGRESS',
+      `Job ${jobId} already has a submission operation in progress.`,
+      409,
+    );
+  }
+}
+
+export class SubmissionTooLargeError extends DomainError {
+  public constructor() {
+    super(
+      'SUBMISSION_TOO_LARGE',
+      'The canonical submission exceeds the configured payload limit.',
+      413,
+    );
+  }
+}
+
+export class StorageOperationFailedError extends DomainError {
+  public constructor() {
+    super(
+      'STORAGE_OPERATION_FAILED',
+      'The evidence was not durably verified in 0G Storage. Retry with the same idempotency key.',
+      502,
     );
   }
 }

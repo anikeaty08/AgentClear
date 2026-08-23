@@ -20,7 +20,7 @@ describe.skipIf(databaseUrl === undefined)('PostgresJobRepository', () => {
 
   beforeEach(async () => {
     await client.db.execute(
-      sql`truncate table job_assignment_operations, job_assignments, escrow_funding_operations, escrows, idempotency_records, job_state_events, job_requirements, jobs`,
+      sql`truncate table submission_artifacts, submissions, submission_operations, job_assignment_operations, job_assignments, escrow_funding_operations, escrows, idempotency_records, job_state_events, job_requirements, jobs`,
     );
   });
 

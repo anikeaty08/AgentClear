@@ -10,12 +10,16 @@ import {
   PostgresAssignmentRepository,
   PostgresEscrowRepository,
   PostgresJobRepository,
+  PostgresSubmissionRepository,
 } from '@agentclear/db';
 import {
   AssignmentService,
   FundingService,
   InMemoryExclusiveExecutor,
   JobService,
+  SubmissionQueryService,
+  SubmissionService,
+  type EvidenceStorage,
 } from '@agentclear/domain';
 import { sql } from 'drizzle-orm';
 import {
@@ -33,7 +37,7 @@ import { privateKeyToAccount, type PrivateKeyAccount } from 'viem/accounts';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import { buildApp } from '../src/app.js';
-import { BootstrapApiKeyAuthenticator } from '../src/auth.js';
+import { BootstrapApiKeyAuthenticator, CompositeAuthenticator } from '../src/auth.js';
 
 type JobEscrowArtifact = {
   abi: Abi;
@@ -104,14 +108,31 @@ function createRandomSigner(): PrivateKeyAccount {
   throw new Error('Could not generate a valid integration-test signer.');
 }
 
+class IntegrationEvidenceStorage implements EvidenceStorage {
+  public calls = 0;
+
+  public async uploadVerified(data: Uint8Array) {
+    this.calls += 1;
+    return {
+      rootHash: `0x${'d'.repeat(64)}` as const,
+      transactionHash: `0x${'e'.repeat(64)}` as const,
+      transactionSequence: 11,
+      sizeBytes: data.byteLength,
+      verified: true as const,
+    };
+  }
+}
+
 describe.skipIf(databaseUrl === undefined)('AgentClear funding API with PostgreSQL and Anvil', () => {
   const database = createDatabaseClient(databaseUrl!);
   const apiKey = 'funding-integration-api-key-at-least-32-chars';
+  const providerApiKey = 'provider-integration-api-key-at-least-32-chars';
   let anvil: ChildProcess | undefined;
   let app: Awaited<ReturnType<typeof buildApp>>;
   let publicClient: ReturnType<typeof createPublicClient>;
   let gateway: ViemJobEscrowGateway;
   let providerAddress: Address;
+  const evidenceStorage = new IntegrationEvidenceStorage();
 
   beforeAll(async () => {
     const port = await reservePort();
@@ -173,11 +194,23 @@ describe.skipIf(databaseUrl === undefined)('AgentClear funding API with PostgreS
     }
 
     const jobRepository = new PostgresJobRepository(database.db);
+    const submissionRepository = new PostgresSubmissionRepository(database.db);
     gateway = new ViemJobEscrowGateway({ rpcUrl, chain, contractAddress, account: signer });
     const chainWriteExecutor = new InMemoryExclusiveExecutor();
     app = await buildApp({
       jobRepository,
       jobService: new JobService({ repository: jobRepository }),
+      submissionQueryService: new SubmissionQueryService(
+        jobRepository,
+        submissionRepository,
+      ),
+      submissionService: new SubmissionService({
+        jobRepository,
+        submissionRepository,
+        storage: evidenceStorage,
+        maxPayloadBytes: 262_144,
+        executor: chainWriteExecutor,
+      }),
       fundingService: new FundingService({
         jobRepository,
         escrowRepository: new PostgresEscrowRepository(database.db),
@@ -192,17 +225,26 @@ describe.skipIf(databaseUrl === undefined)('AgentClear funding API with PostgreS
         executor: chainWriteExecutor,
       }),
       chainHealth: async () => gateway.health(),
-      authenticator: new BootstrapApiKeyAuthenticator(
-        apiKey,
-        'funding-integration-pepper-at-least-32-chars',
-        'operator_funding_it',
-      ),
+      authenticator: new CompositeAuthenticator([
+        new BootstrapApiKeyAuthenticator(
+          apiKey,
+          'funding-integration-pepper-at-least-32-chars',
+          'operator_funding_it',
+        ),
+        new BootstrapApiKeyAuthenticator(
+          providerApiKey,
+          'funding-integration-pepper-at-least-32-chars',
+          'erc8004:16602:456',
+          'agent',
+          new Set(['jobs:read', 'jobs:submit']),
+        ),
+      ]),
     });
   });
 
   beforeEach(async () => {
     await database.db.execute(
-      sql`truncate table job_assignment_operations, job_assignments, escrow_funding_operations, escrows, idempotency_records, job_state_events, job_requirements, jobs`,
+      sql`truncate table submission_artifacts, submissions, submission_operations, job_assignment_operations, job_assignments, escrow_funding_operations, escrows, idempotency_records, job_state_events, job_requirements, jobs`,
     );
   });
 
@@ -212,7 +254,7 @@ describe.skipIf(databaseUrl === undefined)('AgentClear funding API with PostgreS
     if (anvil !== undefined && anvil.exitCode === null) anvil.kill();
   });
 
-  it('creates, quotes, funds, and assigns with attested transaction-backed state changes', async () => {
+  it('creates, funds, assigns, and stores a provider submission through the real boundaries', async () => {
     const authorization = `Bearer ${apiKey}`;
     const created = await app.inject({
       method: 'POST',
@@ -314,11 +356,86 @@ describe.skipIf(databaseUrl === undefined)('AgentClear funding API with PostgreS
 
     const chainEscrow = await gateway.getEscrow(jobId);
     expect(chainEscrow.provider).toBe(providerAddress);
-    const persisted = await database.db.execute<{ state: string; events: string }>(sql`
+
+    const submissionKey = randomUUID();
+    const providerAuthorization = `Bearer ${providerApiKey}`;
+    const submissionPayload = {
+      result: {
+        patch: 'diff --git a/src/sorter.ts b/src/sorter.ts',
+        tests: { passed: 12, failed: 0 },
+      },
+    };
+    const unauthorizedSubmission = await app.inject({
+      method: 'POST',
+      url: `/v1/jobs/${jobId}/submissions`,
+      headers: {
+        authorization,
+        'idempotency-key': randomUUID(),
+      },
+      payload: submissionPayload,
+    });
+    expect(unauthorizedSubmission.statusCode).toBe(403);
+    expect(unauthorizedSubmission.json().error.code).toBe('PROVIDER_NOT_AUTHORIZED');
+
+    const submitted = await app.inject({
+      method: 'POST',
+      url: `/v1/jobs/${jobId}/submissions`,
+      headers: {
+        authorization: providerAuthorization,
+        'idempotency-key': submissionKey,
+      },
+      payload: submissionPayload,
+    });
+    const submissionReplay = await app.inject({
+      method: 'POST',
+      url: `/v1/jobs/${jobId}/submissions`,
+      headers: {
+        authorization: providerAuthorization,
+        'idempotency-key': submissionKey,
+      },
+      payload: submissionPayload,
+    });
+    const listed = await app.inject({
+      method: 'GET',
+      url: `/v1/jobs/${jobId}/submissions`,
+      headers: { authorization },
+    });
+
+    expect(submitted.statusCode).toBe(201);
+    expect(submitted.json().data.job.state).toBe('SUBMITTED');
+    expect(submitted.json().data.submission).toMatchObject({
+      providerAgentId: 'erc8004:16602:456',
+      storageRootHash: `0x${'d'.repeat(64)}`,
+      storageTransactionHash: `0x${'e'.repeat(64)}`,
+      storageTransactionSequence: 11,
+    });
+    expect(submitted.body).not.toContain('canonicalPayload');
+    expect(submissionReplay.headers['idempotency-replayed']).toBe('true');
+    expect(evidenceStorage.calls).toBe(1);
+    expect(listed.json().data.submissions).toHaveLength(1);
+
+    const persisted = await database.db.execute<{
+      state: string;
+      events: string;
+      submissions: string;
+      artifacts: string;
+      payload: string | null;
+    }>(sql`
       select
         (select state::text from jobs where id = ${jobId}) as state,
-        (select count(*)::text from job_state_events where job_id = ${jobId}) as events
+        (select count(*)::text from job_state_events where job_id = ${jobId}) as events,
+        (select count(*)::text from submissions where job_id = ${jobId}) as submissions,
+        (select count(*)::text from submission_artifacts where submission_id in (
+          select id from submissions where job_id = ${jobId}
+        )) as artifacts,
+        (select canonical_payload from submission_operations where job_id = ${jobId}) as payload
     `);
-    expect(persisted.rows[0]).toEqual({ state: 'ASSIGNED', events: '5' });
+    expect(persisted.rows[0]).toEqual({
+      state: 'SUBMITTED',
+      events: '7',
+      submissions: '1',
+      artifacts: '1',
+      payload: null,
+    });
   });
 });

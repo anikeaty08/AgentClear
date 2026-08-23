@@ -2,7 +2,7 @@
 
 AgentClear is an outcome-verification and settlement layer for AI-agent commerce on 0G. It binds a structured task agreement to escrow, evidence-backed verification, settlement or refund, and transaction-backed agent reputation.
 
-The repository is under active development. The real local vertical flow currently reaches `ASSIGNED`: create and quote an agreement, persist and broadcast a signed funding transaction, attest the escrow, open the funded job, assign a provider through a second durable transaction, and attest the provider on-chain. It is implemented through REST, PostgreSQL, viem, and the native-asset `JobEscrow` contract. A 0G testnet deployment, provider submission, verification, Storage, Compute, settlement orchestration, ERC-8004 writes, MCP, and the operator UI remain in progress and are not simulated.
+The repository is under active development. The real local EVM vertical flow currently reaches `SUBMITTED`: create and quote an agreement, persist and broadcast funding and assignment transactions, attest both escrow changes, authorize the assigned provider, and persist a content-addressed evidence submission. It is implemented through REST, PostgreSQL, viem, the native-asset `JobEscrow` contract, and a production adapter for the current 0G Storage SDK. The automated API flow uses an explicitly labelled storage test adapter because no live 0G credentials are available; a 0G testnet deployment, live Storage upload, verification, Compute, settlement orchestration, ERC-8004 writes, MCP, and the operator UI remain in progress and are not simulated.
 
 ```mermaid
 flowchart LR
@@ -11,7 +11,7 @@ flowchart LR
   Domain --> DB[(PostgreSQL)]
   DB --> Events[Immutable state events]
   Domain --> Chain[Fund + assign / local EVM verified]
-  Domain -. planned .-> Storage[0G Storage evidence]
+  Domain --> Storage[0G Storage evidence adapter]
   Domain -. planned .-> Compute[0G Compute verification]
   Chain -. planned .-> Receipt[Portable receipt + ERC-8004 reputation]
 ```
@@ -21,6 +21,7 @@ flowchart LR
 - Node.js 24, TypeScript 6, pnpm workspaces, and Turborepo
 - Fastify 5 with Zod validation, scoped bootstrap API-key authentication, request IDs, stable errors, and rate limiting
 - PostgreSQL 17 with Drizzle ORM and checked SQL migrations
+- `@0gfoundation/0g-storage-ts-sdk` 1.2.11 with `ethers` 6.13.1 for content-addressed evidence
 - Vitest unit and PostgreSQL integration tests
 - Solidity 0.8.24, Foundry 1.7.1, and OpenZeppelin Contracts 5.6.1
 
@@ -39,7 +40,7 @@ pnpm db:migrate
 pnpm dev
 ```
 
-The API listens on `http://127.0.0.1:3001` by default. Versioned routes require `Authorization: Bearer <BOOTSTRAP_API_KEY>`. Mutating job routes require an `Idempotency-Key` header. Funding and assignment remain disabled unless the complete optional chain group in `.env.example` is configured.
+The API listens on `http://127.0.0.1:3001` by default. Versioned routes require `Authorization: Bearer <BOOTSTRAP_API_KEY>`. Mutating job routes require an `Idempotency-Key` header. Funding and assignment remain disabled unless the complete optional chain group in `.env.example` is configured. Provider submission additionally requires the distinct provider bootstrap credential pair and `STORAGE_INDEXER_URL`; the provider agent ID must exactly match the assigned job.
 
 ## Quality gates
 
@@ -63,9 +64,10 @@ forge test --root packages/contracts -vvv
 - `packages/domain` -- canonical agreement, state machine, commitments, money conversion, and application service
 - `packages/db` -- Drizzle schema, migrations, and PostgreSQL repository adapter
 - `packages/config` -- strict environment validation
+- `packages/storage` -- 0G Storage upload, proof retrieval, and byte-integrity adapter
 - `.0g-skills` -- vendored 0G reference material; current official docs and installed package source remain higher authority
 - `docs` -- architecture, API, contracts, security, and testing notes matching implemented behavior
 
-See [`AGENTS.md`](./AGENTS.md) for the full product definition and [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) for current boundaries and the planned 0G flow.
+See [`AGENTS.md`](./AGENTS.md) for the full product definition, [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) for current boundaries, and [`docs/STORAGE.md`](./docs/STORAGE.md) for the exact 0G Storage integration and its verification status.
 
 No live contract address, transaction hash, 0G Storage reference, Compute receipt, or ERC-8004 deployment is published yet because none has been exercised on 0G testnet from this repository.
