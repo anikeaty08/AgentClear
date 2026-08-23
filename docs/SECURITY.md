@@ -23,6 +23,7 @@
 - Deterministic checks are frozen in the hashed agreement, use exact JSON semantics and integer scoring, and cannot be synthesized from mutable prose after funding.
 - Verification rechecks the submission hash and job/provider/agreement bindings before evaluation. The report is hash-checked across recovery, stored as evidence, and cleared from the operation row after confirmation.
 - `OutcomeRegistry` requires a separate writer role, rejects zero commitments and non-final outcomes, and prevents duplicate finalization.
+- Dependency lifecycle scripts are deny-by-default. pnpm explicitly permits only the required `esbuild` binary install and denies optional native WebSocket accelerators plus the unnecessary `es5-ext` postinstall.
 
 ## Not yet implemented
 

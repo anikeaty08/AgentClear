@@ -5,7 +5,10 @@ packages:
 strictDepBuilds: true
 
 allowBuilds:
+  bufferutil: false
+  es5-ext: false
   esbuild: true
+  utf-8-validate: false
 
 overrides:
   axios: 1.19.0
