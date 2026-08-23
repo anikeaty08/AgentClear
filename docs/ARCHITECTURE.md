@@ -57,7 +57,7 @@ CREATED -> PREPARED -> BROADCAST -> CONFIRMED
 
 The job stays `QUOTED` until funding receipt and state attestation both succeed. Assignment first records `FUNDED -> OPEN`; it records `OPEN -> ASSIGNED` only after the provider stored in the escrow matches the request. Each confirmation updates the operation, escrow record, job state, and immutable state event in one database transaction. Serialized signed transactions are cleared after confirmation and are never returned by REST. A per-job base-unit spending ceiling and separate `jobs:fund` and `jobs:assign` scopes are enforced before signing.
 
-Funding, assignment, and 0G Storage submission reuse one configured signer. A PostgreSQL session advisory lock spans each complete external operation, including preparation, persistence, broadcast/upload, confirmation, and database finalization, so independent API instances cannot concurrently consume its nonce. Repository transactions take a separate state lock, and any unfinished signed or storage operation blocks unrelated writes until it is resumed with its original idempotency key. This protects local, restart, and multi-instance recovery. Automated stale-operation reconciliation and hardened external signer custody remain release blockers.
+Funding, assignment, 0G Storage submission, verification publication, outcome anchoring, and settlement reuse one configured signer. A PostgreSQL session advisory lock spans each complete external operation, including preparation, persistence, broadcast/upload, confirmation, and database finalization, so independent API instances cannot concurrently consume its nonce. Repository transactions take a separate state lock, and any unfinished signed or storage operation blocks unrelated writes until it is resumed with its original idempotency key. This protects local, restart, and multi-instance recovery. Automated stale-operation reconciliation and hardened external signer custody remain release blockers.
 
 Provider agent identifiers are currently syntax-checked and agreement-constrained. Live ERC-8004 registry resolution is not implemented, so assignment proves the payment address was written to escrow but not yet that the supplied identity token exists.
 
@@ -87,7 +87,21 @@ SUBMITTED -> VERIFYING -> PASSED | FAILED | NEEDS_REVIEW
                                   persist exact report     clear payload
 ```
 
-`deterministic_plus_ai` never silently substitutes a model. A deterministic hard failure can produce `FAIL`; otherwise the outcome is `NEEDS_REVIEW` until a real 0G Compute run is available. The locally tested `OutcomeRegistry` and viem gateway can anchor final PASS/FAIL commitments exactly once, but REST settlement has not yet invoked that gateway.
+`deterministic_plus_ai` never silently substitutes a model. A deterministic hard failure can produce `FAIL`; otherwise the outcome is `NEEDS_REVIEW` until a real 0G Compute run is available.
+
+## Outcome and settlement boundary
+
+`SettlementService` accepts only the latest evidence-backed final `PASS` or a final `FAIL` whose frozen agreement permits refund. It first anchors agreement, submission, verification-report, buyer-identity, and provider-identity commitments in `OutcomeRegistry`. Only after reading those commitments back does it prepare the escrow release or failure refund. Each signed transaction is persisted before broadcast and exact retries reuse it.
+
+```text
+PASSED -> SETTLING -> PAID
+FAILED -> FAILED_FINAL -> REFUNDED
+
+CREATED -> OUTCOME_PREPARED -> OUTCOME_BROADCAST -> OUTCOME_CONFIRMED
+        -> ESCROW_PREPARED  -> ESCROW_BROADCAST  -> CONFIRMED
+```
+
+The database records the outcome and escrow transaction hashes/blocks, final amount, immutable state events, and a single payment or refund row. Serialized transactions are cleared after each confirmation. PostgreSQL and contract guards reject a second finalization; an exact idempotency retry returns the original result. `/ready` checks both configured contract deployments. The complete PASS/pay and FAIL/refund paths are exercised through REST against deployed Anvil contracts; this is local EVM evidence, not a 0G testnet claim.
 
 ## Minimal infrastructure choice
 
@@ -103,4 +117,4 @@ agreement -> 0G Chain escrow -> 0G Storage submission evidence
           -> outcome anchor -> settle/refund -> ERC-8004 adapter -> receipt
 ```
 
-None of those planned boundaries currently report simulated success. Each adapter must expose degraded health until it has valid configuration, and integration tests must distinguish local contract tests from live 0G testnet proof.
+Outcome anchoring and settlement/refund are now implemented locally. The sandbox, Compute, ERC-8004, and receipt boundaries remain planned and do not report simulated success. Each adapter must expose degraded health until it has valid configuration, and integration tests must distinguish local contract tests from live 0G testnet proof.

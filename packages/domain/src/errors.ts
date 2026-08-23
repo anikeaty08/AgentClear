@@ -15,7 +15,9 @@ export type DomainErrorCode =
   | 'STORAGE_OPERATION_FAILED'
   | 'VERIFICATION_IN_PROGRESS'
   | 'VERIFICATION_POLICY_UNSUPPORTED'
-  | 'EVIDENCE_INTEGRITY_FAILED';
+  | 'EVIDENCE_INTEGRITY_FAILED'
+  | 'SETTLEMENT_IN_PROGRESS'
+  | 'JOB_NOT_SETTLEABLE';
 
 export class DomainError extends Error {
   public constructor(
@@ -182,6 +184,26 @@ export class EvidenceIntegrityFailedError extends DomainError {
       'EVIDENCE_INTEGRITY_FAILED',
       'Stored evidence did not match the committed submission metadata.',
       502,
+    );
+  }
+}
+
+export class SettlementInProgressError extends DomainError {
+  public constructor(jobId: string) {
+    super(
+      'SETTLEMENT_IN_PROGRESS',
+      `Job ${jobId} already has a settlement operation in progress.`,
+      409,
+    );
+  }
+}
+
+export class JobNotSettleableError extends DomainError {
+  public constructor() {
+    super(
+      'JOB_NOT_SETTLEABLE',
+      'The job has no final PASS or FAIL that can be settled under its refund policy.',
+      409,
     );
   }
 }

@@ -72,6 +72,15 @@ export type AssignProviderResult = ConfirmedChainWrite & {
   escrow: EscrowRecord;
 };
 
+export type FinalizeEscrowCommand = {
+  jobId: string;
+  verificationReportHash: Hex;
+};
+
+export type FinalizeEscrowResult = ConfirmedChainWrite & {
+  escrow: EscrowRecord;
+};
+
 export type PreparedFundingTransaction = {
   jobKey: Hex;
   transactionHash: Hex;
@@ -448,6 +457,93 @@ export class ViemJobEscrowGateway {
 
   public async getEscrow(jobId: string): Promise<EscrowRecord> {
     return this.getEscrowByKey(jobIdToEscrowKey(jobId));
+  }
+
+  public async prepareSettle(
+    command: FinalizeEscrowCommand,
+  ): Promise<PreparedFundingTransaction> {
+    return this.prepareFinalization(command, 'settle');
+  }
+
+  public async prepareFailedRefund(
+    command: FinalizeEscrowCommand,
+  ): Promise<PreparedFundingTransaction> {
+    return this.prepareFinalization(command, 'refundFailed');
+  }
+
+  public async confirmSettle(
+    command: FinalizeEscrowCommand,
+    prepared: PreparedFundingTransaction,
+  ): Promise<FinalizeEscrowResult> {
+    return this.confirmFinalization(command, prepared, ESCROW_STATE.RELEASED);
+  }
+
+  public async confirmFailedRefund(
+    command: FinalizeEscrowCommand,
+    prepared: PreparedFundingTransaction,
+  ): Promise<FinalizeEscrowResult> {
+    return this.confirmFinalization(command, prepared, ESCROW_STATE.REFUNDED);
+  }
+
+  async prepareFinalization(
+    command: FinalizeEscrowCommand,
+    functionName: 'refundFailed' | 'settle',
+  ): Promise<PreparedFundingTransaction> {
+    requireBytes32(command.verificationReportHash, 'verificationReportHash');
+    if (typeof this.#options.account === 'string') {
+      throw new ChainConfigurationError('Durable settlement requires a local signer account.');
+    }
+    const jobKey = jobIdToEscrowKey(command.jobId);
+    const args = [jobKey, command.verificationReportHash] as const;
+    const { publicClient, walletClient } = this.#clients();
+    await publicClient.simulateContract({
+      account: this.#options.account,
+      address: this.#options.contractAddress,
+      abi: jobEscrowAbi,
+      functionName,
+      args,
+    });
+    const data = encodeFunctionData({ abi: jobEscrowAbi, functionName, args });
+    const request = await walletClient.prepareTransactionRequest({
+      account: this.#options.account,
+      to: this.#options.contractAddress,
+      data,
+    });
+    const serializedTransaction = await walletClient.signTransaction(request);
+    return {
+      jobKey,
+      transactionHash: keccak256(serializedTransaction),
+      serializedTransaction,
+      contractAddress: this.#options.contractAddress,
+      signerAddress: this.signerAddress,
+    };
+  }
+
+  async confirmFinalization(
+    command: FinalizeEscrowCommand,
+    prepared: PreparedFundingTransaction,
+    expectedState: typeof ESCROW_STATE.RELEASED | typeof ESCROW_STATE.REFUNDED,
+  ): Promise<FinalizeEscrowResult> {
+    const jobKey = jobIdToEscrowKey(command.jobId);
+    if (prepared.jobKey !== jobKey || prepared.signerAddress !== this.signerAddress) {
+      throw new ChainConfigurationError('Prepared transaction does not match this settlement.');
+    }
+    const { publicClient } = this.#clients();
+    const receipt = await publicClient.waitForTransactionReceipt({
+      hash: prepared.transactionHash,
+      confirmations: this.#options.confirmations ?? 1,
+    });
+    if (receipt.status !== 'success') throw new ChainTransactionRevertedError(prepared.transactionHash);
+    const escrow = await this.getEscrowByKey(jobKey);
+    if (escrow.state !== expectedState) {
+      throw new EscrowAttestationError('Confirmed settlement has an unexpected escrow state.');
+    }
+    return {
+      transactionHash: prepared.transactionHash,
+      blockNumber: receipt.blockNumber.toString(),
+      contractAddress: this.#options.contractAddress,
+      escrow,
+    };
   }
 
   private async getEscrowByKey(jobKey: Hex): Promise<EscrowRecord> {

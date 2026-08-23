@@ -6,3 +6,4 @@ export * from './job-repository.js';
 export * from './schema.js';
 export * from './submission-repository.js';
 export * from './verification-repository.js';
+export * from './settlement-repository.js';

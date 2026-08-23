@@ -31,7 +31,7 @@ describe.skipIf(databaseUrl === undefined)('AgentClear API with PostgreSQL', () 
 
   beforeEach(async () => {
     await database.db.execute(
-      sql`truncate table verification_reports, verification_checks, verification_runs, verification_operations, submission_artifacts, submissions, submission_operations, job_assignment_operations, job_assignments, escrow_funding_operations, escrows, idempotency_records, job_state_events, job_requirements, jobs`,
+      sql`truncate table settlements, refunds, settlement_operations, verification_reports, verification_checks, verification_runs, verification_operations, submission_artifacts, submissions, submission_operations, job_assignment_operations, job_assignments, escrow_funding_operations, escrows, idempotency_records, job_state_events, job_requirements, jobs`,
     );
   });
 

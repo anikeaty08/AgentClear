@@ -10,6 +10,7 @@ import type {
   SubmissionService,
   VerificationQueryService,
   VerificationService,
+  SettlementService,
 } from '@agentclear/domain';
 import { DomainError } from '@agentclear/domain';
 import Fastify, { LogController, type FastifyRequest, type FastifyServerOptions } from 'fastify';
@@ -60,6 +61,7 @@ export type BuildAppOptions = {
   submissionQueryService: SubmissionQueryService;
   verificationService?: VerificationService;
   verificationQueryService: VerificationQueryService;
+  settlementService?: SettlementService;
   chainHealth?: () => Promise<unknown>;
   storageHealth?: () => Promise<unknown>;
   logger?: FastifyServerOptions['logger'];
@@ -321,6 +323,42 @@ export async function buildApp(options: BuildAppOptions) {
     const { id } = jobIdParamsSchema.parse(request.params);
     const verifications = await options.verificationQueryService.listVerifications(id);
     return { data: { verifications }, meta: { requestId: request.id } };
+  });
+
+  app.post('/v1/jobs/:id/settle', async (request, reply) => {
+    const principal = requireScope(request, 'jobs:settle');
+    const idempotencyKey = idempotencyKeySchema.parse(request.headers['idempotency-key']);
+    const { id } = jobIdParamsSchema.parse(request.params);
+    if (options.settlementService === undefined) {
+      throw new ApiError(
+        'CHAIN_UNAVAILABLE',
+        'Settlement is disabled because the outcome registry or chain signer is not configured.',
+        503,
+      );
+    }
+    const result = await options.settlementService.settleJob(id, request.body, {
+      actor: { type: principal.kind === 'agent' ? 'agent' : 'operator', id: principal.id },
+      idempotencyKey,
+    });
+    return reply
+      .header('idempotency-replayed', result.replayed ? 'true' : 'false')
+      .send({
+        data: {
+          job: result.job,
+          finalization: result.finalization,
+          operation: {
+            status: result.operation.status,
+            outcome: result.operation.outcome,
+            outcomeContractAddress: result.operation.outcomeContractAddress,
+            outcomeTransactionHash: result.operation.outcomeTransactionHash,
+            outcomeBlockNumber: result.operation.outcomeBlockNumber,
+            escrowContractAddress: result.operation.escrowContractAddress,
+            escrowTransactionHash: result.operation.escrowTransactionHash,
+            escrowBlockNumber: result.operation.escrowBlockNumber,
+          },
+        },
+        meta: { requestId: request.id, replayed: result.replayed },
+      });
   });
 
   return app;

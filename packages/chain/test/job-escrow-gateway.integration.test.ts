@@ -165,7 +165,7 @@ describe('ViemJobEscrowGateway against Anvil', () => {
       account: buyer,
       abi: artifact.abi,
       bytecode: artifact.bytecode.object,
-      args: [buyer, 0, buyer, buyer, buyer, 250],
+      args: [buyer, 0, localSigner.address, buyer, buyer, 250],
     });
     const deploymentReceipt = await publicClient.waitForTransactionReceipt({ hash: deploymentHash });
     const contractAddress = deploymentReceipt.contractAddress;
@@ -270,5 +270,14 @@ describe('ViemJobEscrowGateway against Anvil', () => {
       providerIdentityHash: agentIdentityToHash(outcomeCommand.providerAgentId),
       outcome: 'PASS',
     });
+
+    const settlementCommand = {
+      jobId,
+      verificationReportHash: outcomeCommand.verificationReportHash,
+    };
+    const preparedSettlement = await gateway.prepareSettle(settlementCommand);
+    await gateway.broadcastPreparedTransaction(preparedSettlement);
+    const settlement = await gateway.confirmSettle(settlementCommand, preparedSettlement);
+    expect(settlement.escrow.state).toBe(ESCROW_STATE.RELEASED);
   });
 });

@@ -25,6 +25,7 @@ import {
   submissionOperations,
   submissions,
   verificationOperations,
+  settlementOperations,
 } from './schema.js';
 
 function rowToOperation(row: typeof submissionOperations.$inferSelect): SubmissionOperation {
@@ -193,10 +194,16 @@ export class PostgresSubmissionRepository implements SubmissionRepository {
           inArray(verificationOperations.status, ['CREATED', 'EVALUATED', 'STORING']),
         )
         .limit(1);
+      const [activeSettlement] = await transaction
+        .select({ id: settlementOperations.id })
+        .from(settlementOperations)
+        .where(sql`${settlementOperations.status} <> 'CONFIRMED'`)
+        .limit(1);
       if (
         activeFunding !== undefined
         || activeAssignment !== undefined
         || activeVerification !== undefined
+        || activeSettlement !== undefined
       ) {
         throw new ChainSignerBusyError();
       }

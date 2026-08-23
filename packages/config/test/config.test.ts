@@ -46,11 +46,23 @@ describe('loadRuntimeConfig', () => {
       CHAIN_NAME: 'AgentClear Anvil',
       CHAIN_NATIVE_CURRENCY_SYMBOL: 'A0GI',
       JOB_ESCROW_ADDRESS: `0x${'1'.repeat(40)}`,
+      OUTCOME_REGISTRY_ADDRESS: `0x${'3'.repeat(40)}`,
       CHAIN_SIGNER_PRIVATE_KEY: `0x${'2'.repeat(64)}`,
       CHAIN_MAX_PER_JOB_BASE_UNITS: '5000000000000000000',
     });
 
-    expect(config.chain).toMatchObject({ chainId: 31_337, confirmations: 1 });
+    expect(config.chain).toMatchObject({
+      chainId: 31_337,
+      confirmations: 1,
+      outcomeRegistryAddress: `0x${'3'.repeat(40)}`,
+    });
+  });
+
+  it('does not enable outcome settlement from an address without complete signer settings', () => {
+    expect(() => loadRuntimeConfig({
+      ...validEnvironment,
+      OUTCOME_REGISTRY_ADDRESS: `0x${'3'.repeat(40)}`,
+    })).toThrow('Outcome settlement requires the complete chain signer configuration.');
   });
 
   it('rejects local chain endpoints in production', () => {

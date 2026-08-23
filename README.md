@@ -2,7 +2,7 @@
 
 AgentClear is an outcome-verification and settlement layer for AI-agent commerce on 0G. It binds a structured task agreement to escrow, evidence-backed verification, settlement or refund, and transaction-backed agent reputation.
 
-The repository is under active development. The real local EVM vertical flow currently reaches `PASSED`: create and quote an agreement, persist and attest funding and assignment transactions, authorize the assigned provider, store content-addressed submission evidence, retrieve and verify its commitment, execute explicit deterministic checks, and store an auditable verification report. It is implemented through REST, PostgreSQL, viem, `JobEscrow`, `OutcomeRegistry`, and a production adapter for the current 0G Storage SDK. The automated API flow uses an explicitly labelled storage test adapter because no live 0G credentials are available. `OutcomeRegistry` is exercised through real local transactions but is not yet wired into REST settlement. A 0G testnet deployment, live Storage upload, Compute, settlement/refund orchestration, ERC-8004 writes, MCP, and the operator UI remain in progress and are not simulated.
+The repository is under active development. The real local EVM vertical flow now reaches both terminal payment outcomes: create and quote an agreement, fund escrow, assign the provider, store and verify evidence, anchor `PASS` or `FAIL` in `OutcomeRegistry`, and release or refund `JobEscrow`. The two automated REST flows use PostgreSQL, real signed Anvil transactions, deployed contracts, and an explicitly labelled content-addressed Storage test adapter because no live 0G credentials are available. Production 0G Storage code uses the current SDK, but a 0G testnet deployment, live Storage upload, Compute, ERC-8004 writes, portable receipts, MCP, and the operator UI remain in progress and are not simulated.
 
 ```mermaid
 flowchart LR
@@ -10,10 +10,12 @@ flowchart LR
   API --> Domain[Canonical agreement + state machine]
   Domain --> DB[(PostgreSQL)]
   DB --> Events[Immutable state events]
-  Domain --> Chain[Fund + assign / local EVM verified]
+  Domain --> Chain[Fund + assign + settle or refund]
   Domain --> Storage[0G Storage evidence adapter]
   Storage --> Verify[Deterministic evidence verification]
   Verify -. when required .-> Compute[0G Compute rubric signal]
+  Verify --> Outcome[OutcomeRegistry commitment]
+  Outcome --> Chain
   Chain -. planned .-> Receipt[Portable receipt + ERC-8004 reputation]
 ```
 
@@ -41,7 +43,7 @@ pnpm db:migrate
 pnpm dev
 ```
 
-The API listens on `http://127.0.0.1:3001` by default. Versioned routes require `Authorization: Bearer <BOOTSTRAP_API_KEY>`. Mutating job routes require an `Idempotency-Key` header. Funding and assignment remain disabled unless the complete optional chain group in `.env.example` is configured. Provider submission additionally requires the distinct provider bootstrap credential pair and `STORAGE_INDEXER_URL`; the provider agent ID must exactly match the assigned job.
+The API listens on `http://127.0.0.1:3001` by default. Versioned routes require `Authorization: Bearer <BOOTSTRAP_API_KEY>`. Mutating job routes require an `Idempotency-Key` header. Funding and assignment remain disabled unless the complete optional chain group in `.env.example` is configured; outcome anchoring and final settlement additionally require `OUTCOME_REGISTRY_ADDRESS`. Provider submission requires the distinct provider bootstrap credential pair and `STORAGE_INDEXER_URL`; the provider agent ID must exactly match the assigned job.
 
 ## Quality gates
 

@@ -64,6 +64,15 @@ export const verificationOutcomeEnum = pgEnum('verification_outcome', [
   'FAIL',
   'NEEDS_REVIEW',
 ]);
+export const settlementOperationStatusEnum = pgEnum('settlement_operation_status', [
+  'CREATED',
+  'OUTCOME_PREPARED',
+  'OUTCOME_BROADCAST',
+  'OUTCOME_CONFIRMED',
+  'ESCROW_PREPARED',
+  'ESCROW_BROADCAST',
+  'CONFIRMED',
+]);
 
 export const jobs = pgTable(
   'jobs',
@@ -423,6 +432,86 @@ export const verificationReports = pgTable('verification_reports', {
   createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull(),
 });
 
+export const settlementOperations = pgTable(
+  'settlement_operations',
+  {
+    id: uuid('id').primaryKey(),
+    jobId: uuid('job_id')
+      .notNull()
+      .references(() => jobs.id, { onDelete: 'restrict' }),
+    submissionId: uuid('submission_id')
+      .notNull()
+      .references(() => submissions.id, { onDelete: 'restrict' }),
+    verificationRunId: uuid('verification_run_id')
+      .notNull()
+      .references(() => verificationRuns.id, { onDelete: 'restrict' }),
+    outcome: verificationOutcomeEnum('outcome').$type<VerificationOutcome>().notNull(),
+    status: settlementOperationStatusEnum('status').notNull(),
+    agreementHash: varchar('agreement_hash', { length: 66 }).notNull(),
+    submissionHash: varchar('submission_hash', { length: 66 }).notNull(),
+    verificationReportHash: varchar('verification_report_hash', { length: 66 }).notNull(),
+    buyerAgentId: text('buyer_agent_id').notNull(),
+    providerAgentId: text('provider_agent_id').notNull(),
+    jobKey: varchar('job_key', { length: 66 }),
+    outcomeContractAddress: varchar('outcome_contract_address', { length: 42 }),
+    outcomeSerializedTransaction: text('outcome_serialized_transaction'),
+    outcomeTransactionHash: varchar('outcome_transaction_hash', { length: 66 }),
+    outcomeBlockNumber: numeric('outcome_block_number', { precision: 78, scale: 0 }),
+    escrowContractAddress: varchar('escrow_contract_address', { length: 42 }),
+    escrowSerializedTransaction: text('escrow_serialized_transaction'),
+    escrowTransactionHash: varchar('escrow_transaction_hash', { length: 66 }),
+    escrowBlockNumber: numeric('escrow_block_number', { precision: 78, scale: 0 }),
+    signerAddress: varchar('signer_address', { length: 42 }),
+    idempotencyScope: varchar('idempotency_scope', { length: 255 }).notNull(),
+    idempotencyKey: varchar('idempotency_key', { length: 255 }).notNull(),
+    requestHash: varchar('request_hash', { length: 66 }).notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull(),
+  },
+  (table) => [
+    unique('settlement_operations_idempotency_unique').on(
+      table.idempotencyScope,
+      table.idempotencyKey,
+    ),
+    unique('settlement_operations_outcome_tx_unique').on(table.outcomeTransactionHash),
+    unique('settlement_operations_escrow_tx_unique').on(table.escrowTransactionHash),
+    uniqueIndex('settlement_operations_active_job_unique')
+      .on(table.jobId)
+      .where(sql`${table.status} <> 'CONFIRMED'`),
+    index('settlement_operations_status_updated_at_idx').on(table.status, table.updatedAt),
+  ],
+);
+
+export const settlements = pgTable('settlements', {
+  jobId: uuid('job_id')
+    .primaryKey()
+    .references(() => jobs.id, { onDelete: 'restrict' }),
+  verificationRunId: uuid('verification_run_id')
+    .notNull()
+    .references(() => verificationRuns.id, { onDelete: 'restrict' }),
+  amountBaseUnits: numeric('amount_base_units', { precision: 78, scale: 0 }).notNull(),
+  outcomeTransactionHash: varchar('outcome_transaction_hash', { length: 66 }).notNull(),
+  outcomeBlockNumber: numeric('outcome_block_number', { precision: 78, scale: 0 }).notNull(),
+  escrowTransactionHash: varchar('escrow_transaction_hash', { length: 66 }).notNull(),
+  escrowBlockNumber: numeric('escrow_block_number', { precision: 78, scale: 0 }).notNull(),
+  finalizedAt: timestamp('finalized_at', { withTimezone: true, mode: 'date' }).notNull(),
+});
+
+export const refunds = pgTable('refunds', {
+  jobId: uuid('job_id')
+    .primaryKey()
+    .references(() => jobs.id, { onDelete: 'restrict' }),
+  verificationRunId: uuid('verification_run_id')
+    .notNull()
+    .references(() => verificationRuns.id, { onDelete: 'restrict' }),
+  amountBaseUnits: numeric('amount_base_units', { precision: 78, scale: 0 }).notNull(),
+  outcomeTransactionHash: varchar('outcome_transaction_hash', { length: 66 }).notNull(),
+  outcomeBlockNumber: numeric('outcome_block_number', { precision: 78, scale: 0 }).notNull(),
+  escrowTransactionHash: varchar('escrow_transaction_hash', { length: 66 }).notNull(),
+  escrowBlockNumber: numeric('escrow_block_number', { precision: 78, scale: 0 }).notNull(),
+  finalizedAt: timestamp('finalized_at', { withTimezone: true, mode: 'date' }).notNull(),
+});
+
 export const databaseSchema = {
   jobs,
   jobRequirements,
@@ -439,4 +528,7 @@ export const databaseSchema = {
   verificationRuns,
   verificationChecks,
   verificationReports,
+  settlementOperations,
+  settlements,
+  refunds,
 };

@@ -1,6 +1,7 @@
 import { loadRuntimeConfig } from '@agentclear/config';
 import {
   createPrivateKeyEscrowGateway,
+  createPrivateKeyOutcomeRegistryGateway,
   defineAgentClearChain,
 } from '@agentclear/chain';
 import {
@@ -11,6 +12,7 @@ import {
   PostgresJobRepository,
   PostgresSubmissionRepository,
   PostgresVerificationRepository,
+  PostgresSettlementRepository,
 } from '@agentclear/db';
 import {
   AssignmentService,
@@ -20,6 +22,7 @@ import {
   SubmissionService,
   VerificationQueryService,
   VerificationService,
+  SettlementService,
 } from '@agentclear/domain';
 import { ZeroGStorageClient } from '@agentclear/storage';
 
@@ -49,6 +52,24 @@ const chain =
         confirmations: config.chain.confirmations,
       });
 const chainWriteExecutor = new PostgresExclusiveExecutor(database.pool);
+const outcomeGateway =
+  config.chain?.outcomeRegistryAddress === undefined
+    ? undefined
+    : createPrivateKeyOutcomeRegistryGateway({
+        rpcUrl: config.chain.rpcUrl,
+        chain: defineAgentClearChain({
+          chainId: config.chain.chainId,
+          name: config.chain.name,
+          nativeCurrencySymbol: config.chain.nativeCurrencySymbol,
+          rpcUrl: config.chain.rpcUrl,
+          ...(config.chain.explorerUrl === undefined
+            ? {}
+            : { explorerUrl: config.chain.explorerUrl }),
+        }),
+        contractAddress: config.chain.outcomeRegistryAddress,
+        privateKey: config.chain.signerPrivateKey,
+        confirmations: config.chain.confirmations,
+      });
 const fundingService =
   config.chain === undefined || chain === undefined
     ? undefined
@@ -79,6 +100,7 @@ const storage =
       });
 const submissionRepository = new PostgresSubmissionRepository(database.db);
 const verificationRepository = new PostgresVerificationRepository(database.db);
+const settlementRepository = new PostgresSettlementRepository(database.db);
 const submissionService =
   config.storage === undefined || storage === undefined
     ? undefined
@@ -98,6 +120,18 @@ const verificationService =
         verificationRepository,
         storage,
         maxReportBytes: config.storage.maxPayloadBytes,
+        executor: chainWriteExecutor,
+      });
+const settlementService =
+  chain === undefined || outcomeGateway === undefined
+    ? undefined
+    : new SettlementService({
+        jobRepository,
+        submissionRepository,
+        verificationRepository,
+        settlementRepository,
+        outcomeGateway,
+        escrowGateway: chain,
         executor: chainWriteExecutor,
       });
 const authenticators = [
@@ -130,7 +164,17 @@ const app = await buildApp({
   ...(assignmentService === undefined ? {} : { assignmentService }),
   ...(submissionService === undefined ? {} : { submissionService }),
   ...(verificationService === undefined ? {} : { verificationService }),
-  ...(chain === undefined ? {} : { chainHealth: async () => chain.health() }),
+  ...(settlementService === undefined ? {} : { settlementService }),
+  ...(chain === undefined
+    ? {}
+    : {
+        chainHealth: async () => ({
+          escrow: await chain.health(),
+          ...(outcomeGateway === undefined
+            ? {}
+            : { outcomeRegistry: await outcomeGateway.health() }),
+        }),
+      }),
   ...(storage === undefined ? {} : { storageHealth: async () => storage.health() }),
   logger: {
     level: config.api.logLevel,

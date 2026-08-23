@@ -12,7 +12,7 @@ Mutating routes require an `Idempotency-Key` containing 8-255 ASCII letters, dig
 
 ## Health
 
-`GET /health` reports process liveness. `GET /ready` verifies PostgreSQL and, when configured, the chain ID, escrow bytecode, and 0G Storage indexer. A configured but unavailable integration makes readiness fail without exposing credentials.
+`GET /health` reports process liveness. `GET /ready` verifies PostgreSQL and, when configured, the chain ID, escrow bytecode, outcome-registry bytecode, and 0G Storage indexer. A configured but unavailable integration makes readiness fail without exposing credentials.
 
 ## Create a job
 
@@ -115,6 +115,12 @@ Verification proof-downloads the submission, checks its SHA-256 commitment and m
 
 `GET /v1/jobs/:id/verifications` requires `jobs:read` and returns score, outcome, individual check results, verifier version, report commitment, and Storage metadata.
 
+## Settle or refund a verified job
+
+`POST /v1/jobs/:id/settle` requires `jobs:settle`, an idempotency key, an empty object body, and both configured contract addresses. A job in `PASSED` anchors `PASS` and releases escrow to the provider's pull-payment balance. A job in `FAILED` anchors `FAIL` and refunds the buyer's pull-payment balance only when the frozen `refundPolicy.onFinalFailure` is true. `NEEDS_REVIEW` cannot settle.
+
+The service durably prepares, broadcasts, confirms, and reads back the `OutcomeRegistry` transaction before preparing the `JobEscrow` transaction. The response contains the payment/refund kind, integer amount, both transaction hashes and block numbers, and final timestamp; serialized transactions and private keys are never returned. Exact replay returns the original finalization with `Idempotency-Replayed: true`. A different key cannot finalize the same job again.
+
 ## Get a job
 
 `GET /v1/jobs/:id` requires `jobs:read` and returns the stored canonical agreement, current provider identity when assigned, agreement hash, internal base-unit budget, state, version, and timestamps.
@@ -131,4 +137,4 @@ Verification proof-downloads the submission, checks its SHA-256 commitment and m
 }
 ```
 
-Stable codes currently include `AUTHENTICATION_REQUIRED`, `INSUFFICIENT_SCOPE`, `INVALID_REQUEST`, `RATE_LIMIT_EXCEEDED`, `JOB_NOT_FOUND`, `JOB_DEADLINE_NOT_FUTURE`, `INVALID_JOB_TRANSITION`, `IDEMPOTENCY_KEY_REUSED`, `CHAIN_UNAVAILABLE`, `CHAIN_OPERATION_FAILED`, `CHAIN_SIGNER_BUSY`, `JOB_FUNDING_IN_PROGRESS`, `JOB_ASSIGNMENT_IN_PROGRESS`, `PROVIDER_MISMATCH`, `PROVIDER_NOT_AUTHORIZED`, `SUBMISSION_IN_PROGRESS`, `SUBMISSION_TOO_LARGE`, `VERIFICATION_IN_PROGRESS`, `VERIFICATION_POLICY_UNSUPPORTED`, `EVIDENCE_INTEGRITY_FAILED`, `STORAGE_UNAVAILABLE`, `STORAGE_OPERATION_FAILED`, `SPENDING_POLICY_EXCEEDED`, and `INTERNAL_ERROR`.
+Stable codes currently include `AUTHENTICATION_REQUIRED`, `INSUFFICIENT_SCOPE`, `INVALID_REQUEST`, `RATE_LIMIT_EXCEEDED`, `JOB_NOT_FOUND`, `JOB_DEADLINE_NOT_FUTURE`, `INVALID_JOB_TRANSITION`, `IDEMPOTENCY_KEY_REUSED`, `CHAIN_UNAVAILABLE`, `CHAIN_OPERATION_FAILED`, `CHAIN_SIGNER_BUSY`, `JOB_FUNDING_IN_PROGRESS`, `JOB_ASSIGNMENT_IN_PROGRESS`, `PROVIDER_MISMATCH`, `PROVIDER_NOT_AUTHORIZED`, `SUBMISSION_IN_PROGRESS`, `SUBMISSION_TOO_LARGE`, `VERIFICATION_IN_PROGRESS`, `VERIFICATION_POLICY_UNSUPPORTED`, `EVIDENCE_INTEGRITY_FAILED`, `SETTLEMENT_IN_PROGRESS`, `JOB_NOT_SETTLEABLE`, `STORAGE_UNAVAILABLE`, `STORAGE_OPERATION_FAILED`, `SPENDING_POLICY_EXCEEDED`, and `INTERNAL_ERROR`.

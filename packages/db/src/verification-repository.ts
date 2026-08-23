@@ -29,6 +29,7 @@ import {
   verificationOperations,
   verificationReports,
   verificationRuns,
+  settlementOperations,
 } from './schema.js';
 
 function rowToJob(row: typeof jobs.$inferSelect): Job {
@@ -177,10 +178,16 @@ export class PostgresVerificationRepository implements VerificationRepository {
           inArray(verificationOperations.status, ['CREATED', 'EVALUATED', 'STORING']),
         )
         .limit(1);
+      const [activeSettlement] = await transaction
+        .select({ id: settlementOperations.id })
+        .from(settlementOperations)
+        .where(sql`${settlementOperations.status} <> 'CONFIRMED'`)
+        .limit(1);
       if (
         activeFunding !== undefined
         || activeAssignment !== undefined
         || activeSubmission !== undefined
+        || activeSettlement !== undefined
       ) {
         throw new ChainSignerBusyError();
       }

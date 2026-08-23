@@ -23,6 +23,7 @@ const runtimeConfigSchema = z
     CHAIN_NATIVE_CURRENCY_SYMBOL: optionalEnvironmentValue(z.string().min(1).max(12)),
     CHAIN_EXPLORER_URL: optionalEnvironmentValue(z.url()),
     JOB_ESCROW_ADDRESS: optionalEnvironmentValue(z.string().regex(/^0x[0-9a-fA-F]{40}$/)),
+    OUTCOME_REGISTRY_ADDRESS: optionalEnvironmentValue(z.string().regex(/^0x[0-9a-fA-F]{40}$/)),
     CHAIN_SIGNER_PRIVATE_KEY: optionalEnvironmentValue(z.string().regex(/^0x[0-9a-fA-F]{64}$/)),
     CHAIN_CONFIRMATIONS: optionalEnvironmentValue(z.coerce.number().int().min(1).max(100)),
     CHAIN_MAX_PER_JOB_BASE_UNITS: optionalEnvironmentValue(z.string().regex(/^[1-9]\d*$/)),
@@ -81,6 +82,13 @@ const runtimeConfigSchema = z
         code: 'custom',
         path: ['STORAGE_INDEXER_URL'],
         message: '0G Storage requires the complete chain signer configuration.',
+      });
+    }
+    if (value.OUTCOME_REGISTRY_ADDRESS !== undefined && configuredChainFields.length !== requiredChainFields.length) {
+      context.addIssue({
+        code: 'custom',
+        path: ['OUTCOME_REGISTRY_ADDRESS'],
+        message: 'Outcome settlement requires the complete chain signer configuration.',
       });
     }
 
@@ -163,6 +171,7 @@ export type RuntimeConfig = {
     signerPrivateKey: `0x${string}`;
     confirmations: number;
     maxPerJobBaseUnits: string;
+    outcomeRegistryAddress?: `0x${string}`;
   };
   storage?: {
     rpcUrl: string;
@@ -190,6 +199,7 @@ export function loadRuntimeConfig(environment: NodeJS.ProcessEnv = process.env):
     CHAIN_NATIVE_CURRENCY_SYMBOL: environment['CHAIN_NATIVE_CURRENCY_SYMBOL'],
     CHAIN_EXPLORER_URL: environment['CHAIN_EXPLORER_URL'],
     JOB_ESCROW_ADDRESS: environment['JOB_ESCROW_ADDRESS'],
+    OUTCOME_REGISTRY_ADDRESS: environment['OUTCOME_REGISTRY_ADDRESS'],
     CHAIN_SIGNER_PRIVATE_KEY: environment['CHAIN_SIGNER_PRIVATE_KEY'],
     CHAIN_CONFIRMATIONS: environment['CHAIN_CONFIRMATIONS'],
     CHAIN_MAX_PER_JOB_BASE_UNITS: environment['CHAIN_MAX_PER_JOB_BASE_UNITS'],
@@ -212,6 +222,9 @@ export function loadRuntimeConfig(environment: NodeJS.ProcessEnv = process.env):
           signerPrivateKey: parsed.CHAIN_SIGNER_PRIVATE_KEY! as `0x${string}`,
           confirmations: parsed.CHAIN_CONFIRMATIONS ?? 1,
           maxPerJobBaseUnits: parsed.CHAIN_MAX_PER_JOB_BASE_UNITS!,
+          ...(parsed.OUTCOME_REGISTRY_ADDRESS === undefined
+            ? {}
+            : { outcomeRegistryAddress: parsed.OUTCOME_REGISTRY_ADDRESS as `0x${string}` }),
         };
   const providerBootstrap =
     parsed.PROVIDER_BOOTSTRAP_API_KEY === undefined

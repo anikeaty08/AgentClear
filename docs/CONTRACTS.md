@@ -28,7 +28,7 @@ Unexpected direct native transfers revert. Forced native transfers can make the 
 
 `packages/contracts/src/OutcomeRegistry.sol` is a non-upgradeable commitment registry. An explicitly authorized writer can record one final `PASS` or `FAIL` per job. Each record binds the job key to agreement, submission, verification-report, buyer-identity, and provider-identity hashes plus the finalization time. Zero hashes, non-final outcomes, unauthorized writes, and duplicate finalization revert.
 
-The companion viem gateway signs before broadcast, supports exact raw-transaction replay, waits for confirmation, reads the stored record, and attests every commitment. Contract and gateway behavior are exercised on Anvil. The application has not yet orchestrated this write with escrow settlement, so it is not described as an end-to-end anchored outcome yet.
+The companion viem gateway signs before broadcast, supports exact raw-transaction replay, waits for confirmation, reads the stored record, and attests every commitment. The application now orchestrates this write before escrow settlement/refund and persists both transaction stages. PASS/payment and FAIL/refund are exercised end-to-end through the local REST integration against deployed Anvil contracts.
 
 ## Verification status
 

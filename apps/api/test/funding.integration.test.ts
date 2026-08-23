@@ -1,10 +1,10 @@
 import { spawn, type ChildProcess } from 'node:child_process';
-import { randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { setTimeout as delay } from 'node:timers/promises';
 
-import { ViemJobEscrowGateway } from '@agentclear/chain';
+import { ViemJobEscrowGateway, ViemOutcomeRegistryGateway } from '@agentclear/chain';
 import {
   createDatabaseClient,
   PostgresAssignmentRepository,
@@ -12,6 +12,7 @@ import {
   PostgresJobRepository,
   PostgresSubmissionRepository,
   PostgresVerificationRepository,
+  PostgresSettlementRepository,
 } from '@agentclear/db';
 import {
   AssignmentService,
@@ -22,6 +23,7 @@ import {
   SubmissionService,
   VerificationQueryService,
   VerificationService,
+  SettlementService,
   type EvidenceStore,
 } from '@agentclear/domain';
 import { sql } from 'drizzle-orm';
@@ -53,6 +55,10 @@ const artifactUrl = new URL(
   '../../../packages/contracts/out/JobEscrow.sol/JobEscrow.json',
   import.meta.url,
 );
+const outcomeArtifactUrl = new URL(
+  '../../../packages/contracts/out/OutcomeRegistry.sol/OutcomeRegistry.json',
+  import.meta.url,
+);
 
 async function reservePort(): Promise<number> {
   const server = createServer();
@@ -82,8 +88,8 @@ async function waitForRpc(url: string, child: ChildProcess): Promise<void> {
   throw new Error('Anvil did not become ready.');
 }
 
-async function readArtifact(): Promise<JobEscrowArtifact> {
-  const parsed: unknown = JSON.parse(await readFile(artifactUrl, 'utf8'));
+async function readArtifact(url = artifactUrl): Promise<JobEscrowArtifact> {
+  const parsed: unknown = JSON.parse(await readFile(url, 'utf8'));
   if (
     typeof parsed !== 'object'
     || parsed === null
@@ -95,7 +101,7 @@ async function readArtifact(): Promise<JobEscrowArtifact> {
     || typeof parsed.bytecode.object !== 'string'
     || !parsed.bytecode.object.startsWith('0x')
   ) {
-    throw new Error('The compiled JobEscrow artifact is invalid.');
+    throw new Error('The compiled contract artifact is invalid.');
   }
   return parsed as JobEscrowArtifact;
 }
@@ -117,7 +123,7 @@ class IntegrationEvidenceStorage implements EvidenceStore {
 
   public async uploadVerified(data: Uint8Array) {
     this.calls += 1;
-    const rootHash = `0x${(this.calls === 1 ? 'd' : 'f').repeat(64)}` as `0x${string}`;
+    const rootHash = `0x${createHash('sha256').update(data).digest('hex')}` as `0x${string}`;
     this.#objects.set(rootHash, new Uint8Array(data));
     return {
       rootHash,
@@ -133,6 +139,11 @@ class IntegrationEvidenceStorage implements EvidenceStore {
     if (stored === undefined) throw new Error('Test evidence root was not found.');
     return new Uint8Array(stored);
   }
+
+  public reset(): void {
+    this.calls = 0;
+    this.#objects.clear();
+  }
 }
 
 describe.skipIf(databaseUrl === undefined)('AgentClear funding API with PostgreSQL and Anvil', () => {
@@ -143,6 +154,7 @@ describe.skipIf(databaseUrl === undefined)('AgentClear funding API with PostgreS
   let app: Awaited<ReturnType<typeof buildApp>>;
   let publicClient: ReturnType<typeof createPublicClient>;
   let gateway: ViemJobEscrowGateway;
+  let outcomeGateway: ViemOutcomeRegistryGateway;
   let providerAddress: Address;
   const evidenceStorage = new IntegrationEvidenceStorage();
 
@@ -197,18 +209,41 @@ describe.skipIf(databaseUrl === undefined)('AgentClear funding API with PostgreS
       account: deployer,
       abi: artifact.abi,
       bytecode: artifact.bytecode.object,
-      args: [deployer, 0, deployer, deployer, deployer, 250],
+      args: [deployer, 0, signer.address, deployer, deployer, 250],
     });
     const deploymentReceipt = await publicClient.waitForTransactionReceipt({ hash: deploymentHash });
     const contractAddress = deploymentReceipt.contractAddress;
     if (deploymentReceipt.status !== 'success' || contractAddress === undefined || contractAddress === null) {
       throw new Error('JobEscrow deployment failed.');
     }
+    const outcomeArtifact = await readArtifact(outcomeArtifactUrl);
+    const outcomeDeploymentHash = await unlockedWallet.deployContract({
+      account: deployer,
+      abi: outcomeArtifact.abi,
+      bytecode: outcomeArtifact.bytecode.object,
+      args: [deployer, 0, signer.address],
+    });
+    const outcomeDeployment = await publicClient.waitForTransactionReceipt({
+      hash: outcomeDeploymentHash,
+    });
+    const outcomeContractAddress = outcomeDeployment.contractAddress;
+    if (
+      outcomeDeployment.status !== 'success'
+      || outcomeContractAddress === undefined
+      || outcomeContractAddress === null
+    ) throw new Error('OutcomeRegistry deployment failed.');
 
     const jobRepository = new PostgresJobRepository(database.db);
     const submissionRepository = new PostgresSubmissionRepository(database.db);
     const verificationRepository = new PostgresVerificationRepository(database.db);
+    const settlementRepository = new PostgresSettlementRepository(database.db);
     gateway = new ViemJobEscrowGateway({ rpcUrl, chain, contractAddress, account: signer });
+    outcomeGateway = new ViemOutcomeRegistryGateway({
+      rpcUrl,
+      chain,
+      contractAddress: outcomeContractAddress,
+      account: signer,
+    });
     const chainWriteExecutor = new InMemoryExclusiveExecutor();
     app = await buildApp({
       jobRepository,
@@ -234,6 +269,15 @@ describe.skipIf(databaseUrl === undefined)('AgentClear funding API with PostgreS
         verificationRepository,
         storage: evidenceStorage,
         maxReportBytes: 262_144,
+        executor: chainWriteExecutor,
+      }),
+      settlementService: new SettlementService({
+        jobRepository,
+        submissionRepository,
+        verificationRepository,
+        settlementRepository,
+        outcomeGateway,
+        escrowGateway: gateway,
         executor: chainWriteExecutor,
       }),
       fundingService: new FundingService({
@@ -268,8 +312,9 @@ describe.skipIf(databaseUrl === undefined)('AgentClear funding API with PostgreS
   });
 
   beforeEach(async () => {
+    evidenceStorage.reset();
     await database.db.execute(
-      sql`truncate table verification_reports, verification_checks, verification_runs, verification_operations, submission_artifacts, submissions, submission_operations, job_assignment_operations, job_assignments, escrow_funding_operations, escrows, idempotency_records, job_state_events, job_requirements, jobs`,
+      sql`truncate table settlements, refunds, settlement_operations, verification_reports, verification_checks, verification_runs, verification_operations, submission_artifacts, submissions, submission_operations, job_assignment_operations, job_assignments, escrow_funding_operations, escrows, idempotency_records, job_state_events, job_requirements, jobs`,
     );
   });
 
@@ -450,7 +495,7 @@ describe.skipIf(databaseUrl === undefined)('AgentClear funding API with PostgreS
     expect(submitted.json().data.job.state).toBe('SUBMITTED');
     expect(submitted.json().data.submission).toMatchObject({
       providerAgentId: 'erc8004:16602:456',
-      storageRootHash: `0x${'d'.repeat(64)}`,
+      storageRootHash: expect.stringMatching(/^0x[0-9a-f]{64}$/),
       storageTransactionHash: `0x${'e'.repeat(64)}`,
       storageTransactionSequence: 11,
     });
@@ -482,11 +527,46 @@ describe.skipIf(databaseUrl === undefined)('AgentClear funding API with PostgreS
     expect(verified.json().data.verification).toMatchObject({
       outcome: 'PASS',
       scoreBps: 10_000,
-      reportStorageRootHash: `0x${'f'.repeat(64)}`,
+      reportStorageRootHash: expect.stringMatching(/^0x[0-9a-f]{64}$/),
     });
     expect(verificationReplay.headers['idempotency-replayed']).toBe('true');
     expect(verifications.json().data.verifications).toHaveLength(1);
     expect(evidenceStorage.calls).toBe(2);
+
+    const settlementKey = randomUUID();
+    const settled = await app.inject({
+      method: 'POST',
+      url: `/v1/jobs/${jobId}/settle`,
+      headers: { authorization, 'idempotency-key': settlementKey },
+      payload: {},
+    });
+    const settlementReplay = await app.inject({
+      method: 'POST',
+      url: `/v1/jobs/${jobId}/settle`,
+      headers: { authorization, 'idempotency-key': settlementKey },
+      payload: {},
+    });
+    expect(settled.statusCode).toBe(200);
+    expect(settlementReplay.statusCode, settlementReplay.body).toBe(200);
+    expect(settled.json().data.job.state).toBe('PAID');
+    expect(settled.json().data.finalization).toMatchObject({
+      kind: 'PAYMENT',
+      amountBaseUnits: parseEther('0.5').toString(),
+      outcomeTransactionHash: expect.stringMatching(/^0x[0-9a-f]{64}$/),
+      escrowTransactionHash: expect.stringMatching(/^0x[0-9a-f]{64}$/),
+    });
+    expect(settled.body).not.toContain('serializedTransaction');
+    expect(settlementReplay.headers['idempotency-replayed']).toBe('true');
+    expect((await gateway.getEscrow(jobId)).state).toBe(3);
+    expect(await outcomeGateway.getOutcome(jobId)).toMatchObject({ outcome: 'PASS' });
+    const duplicateSettlement = await app.inject({
+      method: 'POST',
+      url: `/v1/jobs/${jobId}/settle`,
+      headers: { authorization, 'idempotency-key': randomUUID() },
+      payload: {},
+    });
+    expect(duplicateSettlement.statusCode).toBe(409);
+    expect(duplicateSettlement.json().error.code).toBe('JOB_NOT_SETTLEABLE');
 
     const persisted = await database.db.execute<{
       state: string;
@@ -498,6 +578,9 @@ describe.skipIf(databaseUrl === undefined)('AgentClear funding API with PostgreS
       verificationChecks: string;
       verificationReports: string;
       reportPayload: string | null;
+      settlements: string;
+      refunds: string;
+      settlementPayloads: string;
     }>(sql`
       select
         (select state::text from jobs where id = ${jobId}) as state,
@@ -515,10 +598,15 @@ describe.skipIf(databaseUrl === undefined)('AgentClear funding API with PostgreS
           select id from verification_runs where job_id = ${jobId}
         )) as "verificationReports",
         (select canonical_report from verification_operations where job_id = ${jobId}) as "reportPayload"
+        ,(select count(*)::text from settlements where job_id = ${jobId}) as settlements
+        ,(select count(*)::text from refunds where job_id = ${jobId}) as refunds
+        ,(select count(*)::text from settlement_operations where job_id = ${jobId}
+          and outcome_serialized_transaction is null and escrow_serialized_transaction is null
+        ) as "settlementPayloads"
     `);
     expect(persisted.rows[0]).toEqual({
-      state: 'PASSED',
-      events: '9',
+      state: 'PAID',
+      events: '11',
       submissions: '1',
       artifacts: '1',
       payload: null,
@@ -526,6 +614,129 @@ describe.skipIf(databaseUrl === undefined)('AgentClear funding API with PostgreS
       verificationChecks: '2',
       verificationReports: '1',
       reportPayload: null,
+      settlements: '1',
+      refunds: '0',
+      settlementPayloads: '1',
     });
+  });
+
+  it('anchors a deterministic failure and refunds escrow exactly once', async () => {
+    const authorization = `Bearer ${apiKey}`;
+    const providerAuthorization = `Bearer ${providerApiKey}`;
+    const created = await app.inject({
+      method: 'POST',
+      url: '/v1/jobs',
+      headers: { authorization, 'idempotency-key': randomUUID() },
+      payload: {
+        buyerAgentId: 'erc8004:16602:123',
+        title: 'Return an accepted result',
+        description: 'The provider must explicitly return an accepted result.',
+        budget: { token: 'native', maxAmount: '0.25' },
+        deadline: '2030-08-23T16:00:00.000Z',
+        deliverable: { type: 'data', format: 'application/json' },
+        verification: {
+          mode: 'deterministic',
+          minimumScore: 1,
+          requirements: ['The accepted field must be true.'],
+          deterministicChecks: [{
+            id: 'accepted',
+            kind: 'json_path_equals',
+            description: 'The result was accepted.',
+            path: ['accepted'],
+            expected: true,
+            weightBps: 10_000,
+            hardFailure: true,
+          }],
+        },
+        refundPolicy: { onExpiry: true, onFinalFailure: true },
+      },
+    });
+    expect(created.statusCode, created.body).toBe(201);
+    const jobId = created.json().data.job.id as string;
+
+    const quoted = await app.inject({
+      method: 'POST',
+      url: `/v1/jobs/${jobId}/quote`,
+      headers: { authorization, 'idempotency-key': randomUUID() },
+    });
+    expect(quoted.statusCode).toBe(200);
+    const funded = await app.inject({
+      method: 'POST',
+      url: `/v1/jobs/${jobId}/fund`,
+      headers: { authorization, 'idempotency-key': randomUUID() },
+      payload: {},
+    });
+    expect(funded.statusCode, funded.body).toBe(200);
+    const assigned = await app.inject({
+      method: 'POST',
+      url: `/v1/jobs/${jobId}/assign`,
+      headers: { authorization, 'idempotency-key': randomUUID() },
+      payload: {
+        providerAgentId: 'erc8004:16602:456',
+        providerAddress,
+      },
+    });
+    expect(assigned.statusCode, assigned.body).toBe(200);
+    const submitted = await app.inject({
+      method: 'POST',
+      url: `/v1/jobs/${jobId}/submissions`,
+      headers: {
+        authorization: providerAuthorization,
+        'idempotency-key': randomUUID(),
+      },
+      payload: { result: { accepted: false } },
+    });
+    expect(submitted.statusCode, submitted.body).toBe(201);
+    const verified = await app.inject({
+      method: 'POST',
+      url: `/v1/jobs/${jobId}/verify`,
+      headers: { authorization, 'idempotency-key': randomUUID() },
+      payload: {},
+    });
+    expect(verified.statusCode, verified.body).toBe(200);
+    expect(verified.json().data).toMatchObject({
+      job: { state: 'FAILED' },
+      verification: { outcome: 'FAIL', scoreBps: 0 },
+    });
+
+    const settlementKey = randomUUID();
+    const refunded = await app.inject({
+      method: 'POST',
+      url: `/v1/jobs/${jobId}/settle`,
+      headers: { authorization, 'idempotency-key': settlementKey },
+      payload: {},
+    });
+    const replayed = await app.inject({
+      method: 'POST',
+      url: `/v1/jobs/${jobId}/settle`,
+      headers: { authorization, 'idempotency-key': settlementKey },
+      payload: {},
+    });
+    expect(refunded.statusCode, refunded.body).toBe(200);
+    expect(refunded.json().data).toMatchObject({
+      job: { state: 'REFUNDED' },
+      finalization: {
+        kind: 'REFUND',
+        amountBaseUnits: parseEther('0.25').toString(),
+        outcomeTransactionHash: expect.stringMatching(/^0x[0-9a-f]{64}$/),
+        escrowTransactionHash: expect.stringMatching(/^0x[0-9a-f]{64}$/),
+      },
+    });
+    expect(replayed.statusCode, replayed.body).toBe(200);
+    expect(replayed.headers['idempotency-replayed']).toBe('true');
+    expect((await gateway.getEscrow(jobId)).state).toBe(4);
+    expect(await outcomeGateway.getOutcome(jobId)).toMatchObject({ outcome: 'FAIL' });
+
+    const persisted = await database.db.execute<{
+      settlements: string;
+      refunds: string;
+      events: string;
+    }>(sql`
+      select
+        (select count(*)::text from settlements where job_id = ${jobId}) as settlements,
+        (select count(*)::text from refunds where job_id = ${jobId}) as refunds,
+        (select count(*)::text from job_state_events where job_id = ${jobId}) as events
+    `);
+    expect(persisted.rows[0]).toEqual({ settlements: '0', refunds: '1', events: '11' });
   });
 });

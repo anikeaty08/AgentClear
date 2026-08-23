@@ -82,6 +82,7 @@ const authenticator: Authenticator = {
             'jobs:assign',
             'jobs:submit',
             'jobs:verify',
+            'jobs:settle',
           ]),
         }
       : null;
@@ -288,6 +289,22 @@ describe('AgentClear API', () => {
 
     expect(response.statusCode).toBe(503);
     expect(response.json().error.code).toBe('STORAGE_UNAVAILABLE');
+  });
+
+  it('rejects settlement before mutation when outcome chain configuration is absent', async () => {
+    const app = await createTestApp();
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/jobs/0198d462-75c0-7000-8000-000000000001/settle',
+      headers: {
+        authorization: 'Bearer valid-test-api-key',
+        'idempotency-key': 'settle-job-disabled-001',
+      },
+      payload: {},
+    });
+
+    expect(response.statusCode).toBe(503);
+    expect(response.json().error.code).toBe('CHAIN_UNAVAILABLE');
   });
 
   it('returns a stable validation error without a stack trace', async () => {
