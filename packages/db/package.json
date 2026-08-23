@@ -1,0 +1,28 @@
+{
+  "name": "@agentclear/db",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "lint": "eslint src test --max-warnings=0",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --config vitest.unit.config.ts --passWithNoTests",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "db:migrate": "tsx src/migrate.ts"
+  },
+  "dependencies": {
+    "@agentclear/domain": "workspace:*",
+    "drizzle-orm": "0.45.2",
+    "pg": "8.23.0"
+  },
+  "devDependencies": {
+    "@types/pg": "8.23.1"
+  }
+}

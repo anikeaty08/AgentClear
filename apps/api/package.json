@@ -1,0 +1,26 @@
+{
+  "name": "@agentclear/api",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "dev": "tsx watch src/server.ts",
+    "start": "node dist/server.js",
+    "lint": "eslint src test --max-warnings=0",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --dir test --exclude **/*.integration.test.ts",
+    "test:integration": "vitest run --config vitest.integration.config.ts"
+  },
+  "dependencies": {
+    "@agentclear/config": "workspace:*",
+    "@agentclear/db": "workspace:*",
+    "@agentclear/domain": "workspace:*",
+    "@fastify/rate-limit": "11.2.0",
+    "fastify": "5.12.1",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "drizzle-orm": "0.45.2"
+  }
+}

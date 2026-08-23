@@ -1,0 +1,48 @@
+{
+  "$schema": "https://turbo.build/schema.json",
+  "tasks": {
+    "build": {
+      "dependsOn": ["^build"],
+      "outputs": ["dist/**"]
+    },
+    "dev": {
+      "dependsOn": ["^build"],
+      "cache": false,
+      "persistent": true,
+      "env": [
+        "API_HOST",
+        "API_KEY_PEPPER",
+        "API_PORT",
+        "BOOTSTRAP_API_KEY",
+        "BOOTSTRAP_PRINCIPAL_ID",
+        "DATABASE_URL",
+        "LOG_LEVEL",
+        "NODE_ENV"
+      ]
+    },
+    "lint": {
+      "dependsOn": ["^build"]
+    },
+    "typecheck": {
+      "dependsOn": ["^build"]
+    },
+    "test": {
+      "dependsOn": ["^build"]
+    },
+    "test:integration": {
+      "dependsOn": ["^build"],
+      "cache": false,
+      "env": ["DATABASE_URL"]
+    },
+    "test:e2e": {
+      "dependsOn": ["build"],
+      "cache": false,
+      "outputs": ["playwright-report/**", "test-results/**"]
+    },
+    "db:migrate": {
+      "dependsOn": ["build"],
+      "cache": false,
+      "env": ["DATABASE_URL"]
+    }
+  }
+}

@@ -1,0 +1,162 @@
+import {
+  IdempotencyKeyReusedError,
+  JobService,
+  type CreateJobPersistenceInput,
+  type CreateJobPersistenceResult,
+  type Job,
+  type JobRepository,
+} from '@agentclear/domain';
+import { afterEach, describe, expect, it } from 'vitest';
+
+import { buildApp } from '../src/app.js';
+import type { Authenticator } from '../src/auth.js';
+
+class MemoryJobRepository implements JobRepository {
+  readonly #jobs = new Map<string, Job>();
+  readonly #claims = new Map<string, { requestHash: string; resourceId: string }>();
+
+  public async create(input: CreateJobPersistenceInput): Promise<CreateJobPersistenceResult> {
+    const key = `${input.idempotency.scope}:${input.idempotency.key}`;
+    const claim = this.#claims.get(key);
+    if (claim !== undefined) {
+      if (claim.requestHash !== input.idempotency.requestHash) {
+        throw new IdempotencyKeyReusedError();
+      }
+      return { job: this.#jobs.get(claim.resourceId)!, replayed: true };
+    }
+    this.#claims.set(key, { requestHash: input.idempotency.requestHash, resourceId: input.job.id });
+    this.#jobs.set(input.job.id, input.job);
+    return { job: input.job, replayed: false };
+  }
+
+  public async findById(jobId: string): Promise<Job | null> {
+    return this.#jobs.get(jobId) ?? null;
+  }
+
+  public async ping(): Promise<void> {}
+}
+
+const authenticator: Authenticator = {
+  async authenticate(apiKey) {
+    return apiKey === 'valid-test-api-key'
+      ? { id: 'operator_test', kind: 'operator', scopes: new Set(['jobs:read', 'jobs:write']) }
+      : null;
+  },
+};
+
+const validJob = {
+  buyerAgentId: 'erc8004:16602:123',
+  title: 'Implement transaction sorter',
+  description: 'Implement the requested TypeScript function.',
+  budget: { token: 'native', maxAmount: '2.00' },
+  deadline: '2030-08-23T16:00:00.000Z',
+  deliverable: { type: 'code', format: 'git_patch' },
+  verification: {
+    mode: 'deterministic_plus_ai',
+    minimumScore: 0.9,
+    requirements: ['All hidden tests must pass'],
+  },
+  refundPolicy: { onExpiry: true, onFinalFailure: true },
+};
+
+const apps: Awaited<ReturnType<typeof buildApp>>[] = [];
+
+async function createTestApp() {
+  const repository = new MemoryJobRepository();
+  const app = await buildApp({
+    jobRepository: repository,
+    jobService: new JobService({
+      repository,
+      clock: () => new Date('2026-08-23T00:00:00.000Z'),
+    }),
+    authenticator,
+  });
+  apps.push(app);
+  return app;
+}
+
+afterEach(async () => {
+  await Promise.all(apps.splice(0).map(async (app) => app.close()));
+});
+
+describe('AgentClear API', () => {
+  it('reports liveness without exposing dependency details', async () => {
+    const app = await createTestApp();
+    const response = await app.inject({ method: 'GET', url: '/health' });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ status: 'ok' });
+  });
+
+  it('requires authentication for versioned API routes', async () => {
+    const app = await createTestApp();
+    const response = await app.inject({ method: 'GET', url: '/v1/jobs/0198d462-75c0-7000-8000-000000000001' });
+
+    expect(response.statusCode).toBe(401);
+    expect(response.json().error.code).toBe('AUTHENTICATION_REQUIRED');
+  });
+
+  it('creates and reads a structured job through the shared service', async () => {
+    const app = await createTestApp();
+    const createResponse = await app.inject({
+      method: 'POST',
+      url: '/v1/jobs',
+      headers: {
+        authorization: 'Bearer valid-test-api-key',
+        'idempotency-key': 'create-job-test-001',
+      },
+      payload: validJob,
+    });
+
+    expect(createResponse.statusCode).toBe(201);
+    expect(createResponse.headers['idempotency-replayed']).toBe('false');
+    const createdJob = createResponse.json().data.job as Job;
+
+    const getResponse = await app.inject({
+      method: 'GET',
+      url: `/v1/jobs/${createdJob.id}`,
+      headers: { authorization: 'Bearer valid-test-api-key' },
+    });
+    expect(getResponse.statusCode).toBe(200);
+    expect(getResponse.json().data.job.agreementHash).toBe(createdJob.agreementHash);
+  });
+
+  it('returns the original job for an exact idempotent replay', async () => {
+    const app = await createTestApp();
+    const request = {
+      method: 'POST' as const,
+      url: '/v1/jobs',
+      headers: {
+        authorization: 'Bearer valid-test-api-key',
+        'idempotency-key': 'create-job-test-002',
+      },
+      payload: validJob,
+    };
+
+    const first = await app.inject(request);
+    const replay = await app.inject(request);
+
+    expect(replay.statusCode).toBe(201);
+    expect(replay.headers['idempotency-replayed']).toBe('true');
+    expect(replay.json().data.job.id).toBe(first.json().data.job.id);
+  });
+
+  it('returns a stable validation error without a stack trace', async () => {
+    const app = await createTestApp();
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/jobs',
+      headers: {
+        authorization: 'Bearer valid-test-api-key',
+        'idempotency-key': 'create-job-test-003',
+      },
+      payload: { ...validJob, budget: { token: 'native', maxAmount: 2 } },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({
+      error: { code: 'INVALID_REQUEST', message: expect.any(String), requestId: expect.any(String) },
+    });
+    expect(response.body).not.toContain('stack');
+  });
+});

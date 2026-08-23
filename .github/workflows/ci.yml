@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: agentclear
+          POSTGRES_PASSWORD: agentclear-ci-password
+          POSTGRES_DB: agentclear
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U agentclear -d agentclear"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql://agentclear:agentclear-ci-password@localhost:5432/agentclear
+      NODE_ENV: test
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Enable pinned pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@11.6.0 --activate
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Lint
+        run: pnpm lint
+      - name: Typecheck
+        run: pnpm typecheck
+      - name: Unit tests
+        run: pnpm test
+      - name: Integration tests
+        run: pnpm test:integration
+      - name: Build
+        run: pnpm build
+      - name: Dependency audit
+        run: pnpm audit --audit-level moderate
