@@ -57,6 +57,13 @@
       "when": 1787497200000,
       "tag": "0007_portable_receipts",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1787500800000,
+      "tag": "0008_0g_compute_verification",
+      "breakpoints": true
     }
   ]
 }

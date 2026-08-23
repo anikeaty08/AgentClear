@@ -15,6 +15,9 @@ export type DomainErrorCode =
   | 'STORAGE_OPERATION_FAILED'
   | 'VERIFICATION_IN_PROGRESS'
   | 'VERIFICATION_POLICY_UNSUPPORTED'
+  | 'COMPUTE_UNAVAILABLE'
+  | 'COMPUTE_OPERATION_FAILED'
+  | 'COMPUTE_RECONCILIATION_REQUIRED'
   | 'EVIDENCE_INTEGRITY_FAILED'
   | 'SETTLEMENT_IN_PROGRESS'
   | 'JOB_NOT_SETTLEABLE'
@@ -179,8 +182,38 @@ export class VerificationPolicyUnsupportedError extends DomainError {
   public constructor() {
     super(
       'VERIFICATION_POLICY_UNSUPPORTED',
-      'This agreement does not contain an executable deterministic verification policy.',
+      'This agreement does not contain the executable verification policy required by its mode.',
       422,
+    );
+  }
+}
+
+export class ComputeUnavailableError extends DomainError {
+  public constructor() {
+    super(
+      'COMPUTE_UNAVAILABLE',
+      'This verification policy requires configured 0G Compute access.',
+      503,
+    );
+  }
+}
+
+export class ComputeOperationFailedError extends DomainError {
+  public constructor() {
+    super(
+      'COMPUTE_OPERATION_FAILED',
+      'The 0G Compute verification request failed before a durable report was recorded.',
+      502,
+    );
+  }
+}
+
+export class ComputeReconciliationRequiredError extends DomainError {
+  public constructor(runId: string) {
+    super(
+      'COMPUTE_RECONCILIATION_REQUIRED',
+      `Verification run ${runId} may have incurred a paid 0G Compute request and requires operator reconciliation before retry.`,
+      409,
     );
   }
 }

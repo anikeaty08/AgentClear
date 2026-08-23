@@ -33,6 +33,19 @@ const runtimeConfigSchema = z
     STORAGE_MAX_PAYLOAD_BYTES: optionalEnvironmentValue(
       z.coerce.number().int().min(1_024).max(1_048_576),
     ),
+    COMPUTE_RPC_URL: optionalEnvironmentValue(z.url()),
+    COMPUTE_SIGNER_PRIVATE_KEY: optionalEnvironmentValue(z.string().regex(/^0x[0-9a-fA-F]{64}$/)),
+    COMPUTE_PROVIDER_ADDRESS: optionalEnvironmentValue(z.string().regex(/^0x[0-9a-fA-F]{40}$/)),
+    COMPUTE_MODEL: optionalEnvironmentValue(z.string().trim().min(1).max(300)),
+    COMPUTE_TIMEOUT_MS: optionalEnvironmentValue(
+      z.coerce.number().int().min(1_000).max(300_000),
+    ),
+    COMPUTE_MAX_RESPONSE_BYTES: optionalEnvironmentValue(
+      z.coerce.number().int().min(1_024).max(4_194_304),
+    ),
+    COMPUTE_REQUIRE_TEE: optionalEnvironmentValue(
+      z.enum(['true', 'false']).transform((value) => value === 'true'),
+    ),
   })
   .strict()
   .superRefine((value, context) => {
@@ -113,6 +126,39 @@ const runtimeConfigSchema = z
         message: 'ERC-8004 reputation requires the complete chain signer configuration.',
       });
     }
+    const requiredComputeFields = [
+      'COMPUTE_RPC_URL',
+      'COMPUTE_SIGNER_PRIVATE_KEY',
+      'COMPUTE_PROVIDER_ADDRESS',
+    ] as const;
+    const configuredComputeFields = requiredComputeFields.filter(
+      (field) => value[field] !== undefined,
+    );
+    if (
+      configuredComputeFields.length > 0
+      && configuredComputeFields.length !== requiredComputeFields.length
+    ) {
+      for (const field of requiredComputeFields) {
+        if (value[field] === undefined) {
+          context.addIssue({
+            code: 'custom',
+            path: [field],
+            message: 'All required 0G Compute settings must be configured together.',
+          });
+        }
+      }
+    }
+    if (
+      value.COMPUTE_SIGNER_PRIVATE_KEY !== undefined
+      && value.COMPUTE_SIGNER_PRIVATE_KEY.toLowerCase()
+        === value.CHAIN_SIGNER_PRIVATE_KEY?.toLowerCase()
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['COMPUTE_SIGNER_PRIVATE_KEY'],
+        message: '0G Compute and protocol chain writers must use separate signer keys.',
+      });
+    }
 
     if (value.NODE_ENV !== 'production') {
       return;
@@ -164,6 +210,19 @@ const runtimeConfigSchema = z
         message: 'Local development storage settings are forbidden in production.',
       });
     }
+    const computeHostname =
+      value.COMPUTE_RPC_URL === undefined ? undefined : new URL(value.COMPUTE_RPC_URL).hostname;
+    if (
+      computeHostname === 'localhost'
+      || computeHostname === '127.0.0.1'
+      || computeHostname === '[::1]'
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['COMPUTE_RPC_URL'],
+        message: 'Local 0G Compute RPC settings are forbidden in production.',
+      });
+    }
   });
 
 export type RuntimeConfig = {
@@ -205,6 +264,15 @@ export type RuntimeConfig = {
     signerPrivateKey: `0x${string}`;
     maxPayloadBytes: number;
   };
+  compute?: {
+    rpcUrl: string;
+    signerPrivateKey: `0x${string}`;
+    providerAddress: `0x${string}`;
+    model?: string;
+    timeoutMs: number;
+    maxResponseBytes: number;
+    requireTee: boolean;
+  };
 };
 
 export function loadRuntimeConfig(environment: NodeJS.ProcessEnv = process.env): RuntimeConfig {
@@ -233,6 +301,13 @@ export function loadRuntimeConfig(environment: NodeJS.ProcessEnv = process.env):
     CHAIN_MAX_PER_JOB_BASE_UNITS: environment['CHAIN_MAX_PER_JOB_BASE_UNITS'],
     STORAGE_INDEXER_URL: environment['STORAGE_INDEXER_URL'],
     STORAGE_MAX_PAYLOAD_BYTES: environment['STORAGE_MAX_PAYLOAD_BYTES'],
+    COMPUTE_RPC_URL: environment['COMPUTE_RPC_URL'],
+    COMPUTE_SIGNER_PRIVATE_KEY: environment['COMPUTE_SIGNER_PRIVATE_KEY'],
+    COMPUTE_PROVIDER_ADDRESS: environment['COMPUTE_PROVIDER_ADDRESS'],
+    COMPUTE_MODEL: environment['COMPUTE_MODEL'],
+    COMPUTE_TIMEOUT_MS: environment['COMPUTE_TIMEOUT_MS'],
+    COMPUTE_MAX_RESPONSE_BYTES: environment['COMPUTE_MAX_RESPONSE_BYTES'],
+    COMPUTE_REQUIRE_TEE: environment['COMPUTE_REQUIRE_TEE'],
   });
 
   const chain =
@@ -278,6 +353,18 @@ export function loadRuntimeConfig(environment: NodeJS.ProcessEnv = process.env):
           signerPrivateKey: chain.signerPrivateKey,
           maxPayloadBytes: parsed.STORAGE_MAX_PAYLOAD_BYTES ?? 262_144,
         };
+  const compute =
+    parsed.COMPUTE_RPC_URL === undefined
+      ? undefined
+      : {
+          rpcUrl: parsed.COMPUTE_RPC_URL,
+          signerPrivateKey: parsed.COMPUTE_SIGNER_PRIVATE_KEY! as `0x${string}`,
+          providerAddress: parsed.COMPUTE_PROVIDER_ADDRESS! as `0x${string}`,
+          ...(parsed.COMPUTE_MODEL === undefined ? {} : { model: parsed.COMPUTE_MODEL }),
+          timeoutMs: parsed.COMPUTE_TIMEOUT_MS ?? 120_000,
+          maxResponseBytes: parsed.COMPUTE_MAX_RESPONSE_BYTES ?? 1_048_576,
+          requireTee: parsed.COMPUTE_REQUIRE_TEE ?? true,
+        };
 
   return {
     nodeEnv: parsed.NODE_ENV,
@@ -295,5 +382,6 @@ export function loadRuntimeConfig(environment: NodeJS.ProcessEnv = process.env):
     },
     ...(chain === undefined ? {} : { chain }),
     ...(storage === undefined ? {} : { storage }),
+    ...(compute === undefined ? {} : { compute }),
   };
 }

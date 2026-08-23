@@ -15,6 +15,7 @@
   "dependencies": {
     "@agentclear/chain": "workspace:*",
     "@agentclear/config": "workspace:*",
+    "@agentclear/compute": "workspace:*",
     "@agentclear/db": "workspace:*",
     "@agentclear/domain": "workspace:*",
     "@agentclear/storage": "workspace:*",

@@ -8,6 +8,7 @@ import {
   type ConfirmVerificationInput,
   type Job,
   type JsonValue,
+  type MarkVerificationComputingInput,
   type RecordEvaluationInput,
   type VerificationCheckResult,
   type VerificationOperation,
@@ -57,6 +58,7 @@ function rowToOperation(row: typeof verificationOperations.$inferSelect): Verifi
     submissionId: row.submissionId,
     status: row.status,
     startedAt: row.startedAt.toISOString(),
+    computePromptHash: row.computePromptHash as `0x${string}` | null,
     canonicalReport: row.canonicalReport,
     reportHash: row.reportHash as `0x${string}` | null,
     outcome: row.outcome,
@@ -177,7 +179,7 @@ export class PostgresVerificationRepository implements VerificationRepository {
         .select({ jobId: verificationOperations.jobId })
         .from(verificationOperations)
         .where(
-          inArray(verificationOperations.status, ['CREATED', 'EVALUATED', 'STORING']),
+          inArray(verificationOperations.status, ['CREATED', 'COMPUTING', 'EVALUATED', 'STORING']),
         )
         .limit(1);
       const [activeSettlement] = await transaction
@@ -277,11 +279,34 @@ export class PostgresVerificationRepository implements VerificationRepository {
       .where(
         and(
           eq(verificationOperations.id, input.operationId),
-          eq(verificationOperations.status, 'CREATED'),
+          inArray(verificationOperations.status, ['CREATED', 'COMPUTING']),
         ),
       )
       .returning();
     if (operation === undefined) throw new Error('Verification evaluation could not be recorded.');
+    return rowToOperation(operation);
+  }
+
+  public async markComputing(
+    input: MarkVerificationComputingInput,
+  ): Promise<VerificationOperation> {
+    const [operation] = await this.database
+      .update(verificationOperations)
+      .set({
+        status: 'COMPUTING',
+        computePromptHash: input.promptHash,
+        updatedAt: new Date(input.updatedAt),
+      })
+      .where(
+        and(
+          eq(verificationOperations.id, input.operationId),
+          eq(verificationOperations.status, 'CREATED'),
+        ),
+      )
+      .returning();
+    if (operation === undefined) {
+      throw new Error('Verification compute request cannot begin in its current state.');
+    }
     return rowToOperation(operation);
   }
 
@@ -338,6 +363,9 @@ export class PostgresVerificationRepository implements VerificationRepository {
         : input.report.outcome === 'FAIL'
           ? 'FAILED'
           : 'NEEDS_REVIEW';
+      const reportPromptHash = input.report.version === '2' && input.report.ai !== null
+        ? input.report.ai.promptHash
+        : null;
       if (
         operation.status !== 'STORING'
         || operation.reportHash === null
@@ -346,6 +374,9 @@ export class PostgresVerificationRepository implements VerificationRepository {
         || operation.runId !== input.report.runId
         || operation.jobId !== input.report.jobId
         || operation.submissionId !== input.report.submissionId
+        || (reportPromptHash === null
+          ? operation.computePromptHash !== null
+          : operation.computePromptHash?.toLowerCase() !== reportPromptHash.toLowerCase())
         || input.storage.sizeBytes !== reportBytes.byteLength
         || job.state !== 'VERIFYING'
         || input.event.jobId !== job.id
@@ -365,6 +396,7 @@ export class PostgresVerificationRepository implements VerificationRepository {
         scoreBps: input.report.scoreBps,
         minimumScoreBps: input.report.minimumScoreBps,
         verifierVersion: input.report.verifier.version,
+        aiResult: input.report.version === '2' ? input.report.ai : null,
         startedAt: operation.startedAt,
         completedAt,
       });
@@ -486,6 +518,7 @@ export class PostgresVerificationRepository implements VerificationRepository {
       scoreBps: row.run.scoreBps,
       minimumScoreBps: row.run.minimumScoreBps,
       verifierVersion: row.run.verifierVersion,
+      ai: row.run.aiResult,
       reportHash: row.report.reportHash as `0x${string}`,
       reportStorageRootHash: row.report.storageRootHash as `0x${string}`,
       reportStorageTransactionHash: row.report.storageTransactionHash as `0x${string}` | null,

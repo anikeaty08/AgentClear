@@ -86,6 +86,7 @@ export type BuildAppOptions = {
   receiptService?: ReceiptService;
   chainHealth?: () => Promise<unknown>;
   storageHealth?: () => Promise<unknown>;
+  computeHealth?: () => Promise<unknown>;
   logger?: FastifyServerOptions['logger'];
 };
 
@@ -163,12 +164,14 @@ export async function buildApp(options: BuildAppOptions) {
       await options.jobRepository.ping();
       if (options.chainHealth !== undefined) await options.chainHealth();
       if (options.storageHealth !== undefined) await options.storageHealth();
+      if (options.computeHealth !== undefined) await options.computeHealth();
       return {
         status: 'ready',
         dependencies: {
           database: 'up',
           chain: options.chainHealth === undefined ? 'disabled' : 'up',
           storage: options.storageHealth === undefined ? 'disabled' : 'up',
+          compute: options.computeHealth === undefined ? 'disabled' : 'up',
         },
       };
     } catch (error) {

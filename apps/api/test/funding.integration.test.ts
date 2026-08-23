@@ -33,6 +33,8 @@ import {
   VerificationService,
   SettlementService,
   type EvidenceStore,
+  type AiVerificationResult,
+  type AiVerifier,
 } from '@agentclear/domain';
 import { sql } from 'drizzle-orm';
 import {
@@ -162,6 +164,41 @@ class IntegrationEvidenceStorage implements EvidenceStore {
   }
 }
 
+class ControlledIntegrationAiVerifier implements AiVerifier {
+  public calls = 0;
+  public failAfterDispatch = false;
+
+  public async preflight(): Promise<void> {}
+
+  public async evaluate(): Promise<AiVerificationResult> {
+    this.calls += 1;
+    if (this.failAfterDispatch) throw new Error('Controlled post-dispatch failure.');
+    return {
+      providerAddress: `0x${'c'.repeat(40)}`,
+      model: 'controlled-integration-model',
+      chatId: `controlled-chat-${this.calls}`,
+      scoreBps: 9500,
+      confidenceBps: 9000,
+      criteria: [
+        {
+          id: 'quality',
+          scoreBps: 9500,
+          confidenceBps: 9000,
+          explanation: 'The controlled test response satisfies the configured rubric.',
+        },
+      ],
+      usage: { prompt_tokens: 10, completion_tokens: 20 },
+      rawResponse: '{"scoreBps":9500,"confidenceBps":9000}',
+      responseVerified: true,
+    };
+  }
+
+  public reset(): void {
+    this.calls = 0;
+    this.failAfterDispatch = false;
+  }
+}
+
 describe.skipIf(databaseUrl === undefined)('AgentClear funding API with PostgreSQL and Anvil', () => {
   const database = createDatabaseClient(databaseUrl!);
   const apiKey = 'funding-integration-api-key-at-least-32-chars';
@@ -174,6 +211,7 @@ describe.skipIf(databaseUrl === undefined)('AgentClear funding API with PostgreS
   let reputationGateway: ViemErc8004ReputationGateway;
   let providerAddress: Address;
   const evidenceStorage = new IntegrationEvidenceStorage();
+  const controlledAiVerifier = new ControlledIntegrationAiVerifier();
 
   beforeAll(async () => {
     const port = await reservePort();
@@ -334,6 +372,7 @@ describe.skipIf(databaseUrl === undefined)('AgentClear funding API with PostgreS
         verificationRepository,
         storage: evidenceStorage,
         maxReportBytes: 262_144,
+        aiVerifier: controlledAiVerifier,
         executor: chainWriteExecutor,
       }),
       settlementService: new SettlementService({
@@ -395,6 +434,7 @@ describe.skipIf(databaseUrl === undefined)('AgentClear funding API with PostgreS
 
   beforeEach(async () => {
     evidenceStorage.reset();
+    controlledAiVerifier.reset();
     await database.db.execute(
       sql`truncate table receipts, receipt_operations, reputation_events, reputation_operations, settlements, refunds, settlement_operations, verification_reports, verification_checks, verification_runs, verification_operations, submission_artifacts, submissions, submission_operations, job_assignment_operations, job_assignments, escrow_funding_operations, escrows, idempotency_records, job_state_events, job_requirements, jobs`,
     );
@@ -935,6 +975,217 @@ describe.skipIf(databaseUrl === undefined)('AgentClear funding API with PostgreS
       events: '11',
       reputationEvents: '1',
       receipts: '1',
+    });
+  });
+
+  it('persists a controlled AI rubric signal and never repeats the paid boundary on replay', async () => {
+    const authorization = `Bearer ${apiKey}`;
+    const providerAuthorization = `Bearer ${providerApiKey}`;
+    const created = await app.inject({
+      method: 'POST',
+      url: '/v1/jobs',
+      headers: { authorization, 'idempotency-key': randomUUID() },
+      payload: {
+        buyerAgentId: 'erc8004:31337:123',
+        title: 'Review a structured research result',
+        description: 'Evaluate the submitted research result against the committed rubric.',
+        budget: { token: 'native', maxAmount: '0.1' },
+        deadline: '2030-08-23T16:00:00.000Z',
+        deliverable: { type: 'research', format: 'application/json' },
+        verification: {
+          mode: 'ai',
+          minimumScore: 0.9,
+          requirements: ['The result must be evidence-backed and complete.'],
+          rubric: {
+            criteria: [
+              {
+                id: 'quality',
+                description: 'The result is evidence-backed and complete.',
+                weightBps: 10_000,
+              },
+            ],
+          },
+        },
+        refundPolicy: { onExpiry: true, onFinalFailure: true },
+      },
+    });
+    expect(created.statusCode, created.body).toBe(201);
+    const jobId = created.json().data.job.id as string;
+    expect((await app.inject({
+      method: 'POST',
+      url: `/v1/jobs/${jobId}/quote`,
+      headers: { authorization, 'idempotency-key': randomUUID() },
+    })).statusCode).toBe(200);
+    expect((await app.inject({
+      method: 'POST',
+      url: `/v1/jobs/${jobId}/fund`,
+      headers: { authorization, 'idempotency-key': randomUUID() },
+      payload: {},
+    })).statusCode).toBe(200);
+    expect((await app.inject({
+      method: 'POST',
+      url: `/v1/jobs/${jobId}/assign`,
+      headers: { authorization, 'idempotency-key': randomUUID() },
+      payload: { providerAgentId: 'erc8004:31337:456', providerAddress },
+    })).statusCode).toBe(200);
+    expect((await app.inject({
+      method: 'POST',
+      url: `/v1/jobs/${jobId}/submissions`,
+      headers: { authorization: providerAuthorization, 'idempotency-key': randomUUID() },
+      payload: { result: { summary: 'Evidence-backed result.' } },
+    })).statusCode).toBe(201);
+
+    const verificationKey = randomUUID();
+    const verified = await app.inject({
+      method: 'POST',
+      url: `/v1/jobs/${jobId}/verify`,
+      headers: { authorization, 'idempotency-key': verificationKey },
+      payload: {},
+    });
+    const replayed = await app.inject({
+      method: 'POST',
+      url: `/v1/jobs/${jobId}/verify`,
+      headers: { authorization, 'idempotency-key': verificationKey },
+      payload: {},
+    });
+    expect(verified.statusCode, verified.body).toBe(200);
+    expect(verified.json().data).toMatchObject({
+      job: { state: 'PASSED' },
+      verification: {
+        outcome: 'PASS',
+        scoreBps: 9500,
+        verifierVersion: 'agentclear-verification-v2',
+        ai: {
+          providerAddress: `0x${'c'.repeat(40)}`,
+          model: 'controlled-integration-model',
+          responseVerified: true,
+          scoreBps: 9500,
+        },
+      },
+    });
+    expect(replayed.statusCode, replayed.body).toBe(200);
+    expect(replayed.headers['idempotency-replayed']).toBe('true');
+    expect(controlledAiVerifier.calls).toBe(1);
+
+    const persisted = await database.db.execute<{
+      status: string;
+      promptHash: string | null;
+      aiResult: { model?: string } | null;
+    }>(sql`
+      select
+        vo.status::text as status,
+        vo.compute_prompt_hash as "promptHash",
+        vr.ai_result as "aiResult"
+      from verification_operations vo
+      join verification_runs vr on vr.id = vo.run_id
+      where vo.job_id = ${jobId}
+    `);
+    expect(persisted.rows[0]).toMatchObject({
+      status: 'CONFIRMED',
+      promptHash: expect.stringMatching(/^0x[0-9a-f]{64}$/),
+      aiResult: { model: 'controlled-integration-model' },
+    });
+  });
+
+  it('requires reconciliation instead of repeating an ambiguous paid Compute request', async () => {
+    const authorization = `Bearer ${apiKey}`;
+    const created = await app.inject({
+      method: 'POST',
+      url: '/v1/jobs',
+      headers: { authorization, 'idempotency-key': randomUUID() },
+      payload: {
+        buyerAgentId: 'erc8004:31337:123',
+        title: 'Review an ambiguous paid result',
+        description: 'Exercise paid-request crash recovery without a duplicate inference.',
+        budget: { token: 'native', maxAmount: '0.1' },
+        deadline: '2030-08-23T16:00:00.000Z',
+        deliverable: { type: 'research', format: 'application/json' },
+        verification: {
+          mode: 'ai',
+          minimumScore: 0.9,
+          requirements: ['The result must be evidence-backed.'],
+          rubric: {
+            criteria: [
+              {
+                id: 'quality',
+                description: 'The result is evidence-backed.',
+                weightBps: 10_000,
+              },
+            ],
+          },
+        },
+        refundPolicy: { onExpiry: true, onFinalFailure: true },
+      },
+    });
+    expect(created.statusCode, created.body).toBe(201);
+    const jobId = created.json().data.job.id as string;
+    expect((await app.inject({
+      method: 'POST',
+      url: `/v1/jobs/${jobId}/quote`,
+      headers: { authorization, 'idempotency-key': randomUUID() },
+    })).statusCode).toBe(200);
+    expect((await app.inject({
+      method: 'POST',
+      url: `/v1/jobs/${jobId}/fund`,
+      headers: { authorization, 'idempotency-key': randomUUID() },
+      payload: {},
+    })).statusCode).toBe(200);
+    expect((await app.inject({
+      method: 'POST',
+      url: `/v1/jobs/${jobId}/assign`,
+      headers: { authorization, 'idempotency-key': randomUUID() },
+      payload: { providerAgentId: 'erc8004:31337:456', providerAddress },
+    })).statusCode).toBe(200);
+    expect((await app.inject({
+      method: 'POST',
+      url: `/v1/jobs/${jobId}/submissions`,
+      headers: {
+        authorization: `Bearer ${providerApiKey}`,
+        'idempotency-key': randomUUID(),
+      },
+      payload: { result: { summary: 'Evidence-backed result.' } },
+    })).statusCode).toBe(201);
+
+    controlledAiVerifier.failAfterDispatch = true;
+    const verificationKey = randomUUID();
+    const interrupted = await app.inject({
+      method: 'POST',
+      url: `/v1/jobs/${jobId}/verify`,
+      headers: { authorization, 'idempotency-key': verificationKey },
+      payload: {},
+    });
+    const replayed = await app.inject({
+      method: 'POST',
+      url: `/v1/jobs/${jobId}/verify`,
+      headers: { authorization, 'idempotency-key': verificationKey },
+      payload: {},
+    });
+    expect(interrupted.statusCode, interrupted.body).toBe(502);
+    expect(interrupted.json().error.code).toBe('COMPUTE_OPERATION_FAILED');
+    expect(replayed.statusCode, replayed.body).toBe(409);
+    expect(replayed.json().error.code).toBe('COMPUTE_RECONCILIATION_REQUIRED');
+    expect(controlledAiVerifier.calls).toBe(1);
+
+    const persisted = await database.db.execute<{
+      state: string;
+      status: string;
+      promptHash: string | null;
+      runs: string;
+    }>(sql`
+      select
+        j.state::text as state,
+        vo.status::text as status,
+        vo.compute_prompt_hash as "promptHash",
+        (select count(*)::text from verification_runs where job_id = ${jobId}) as runs
+      from jobs j
+      join verification_operations vo on vo.job_id = j.id
+      where j.id = ${jobId}
+    `);
+    expect(persisted.rows[0]).toMatchObject({
+      state: 'VERIFYING',
+      status: 'COMPUTING',
+      promptHash: expect.stringMatching(/^0x[0-9a-f]{64}$/),
+      runs: '0',
     });
   });
 });

@@ -3,6 +3,7 @@ import type {
   JobState,
   JsonValue,
   PortableReceipt,
+  AiVerificationSignal,
   VerificationCheckResult,
   VerificationOutcome,
 } from '@agentclear/domain';
@@ -56,6 +57,7 @@ export const submissionOperationStatusEnum = pgEnum('submission_operation_status
 ]);
 export const verificationOperationStatusEnum = pgEnum('verification_operation_status', [
   'CREATED',
+  'COMPUTING',
   'EVALUATED',
   'STORING',
   'CONFIRMED',
@@ -361,6 +363,7 @@ export const verificationOperations = pgTable(
       .references(() => submissions.id, { onDelete: 'restrict' }),
     status: verificationOperationStatusEnum('status').notNull(),
     startedAt: timestamp('started_at', { withTimezone: true, mode: 'date' }).notNull(),
+    computePromptHash: varchar('compute_prompt_hash', { length: 66 }),
     canonicalReport: text('canonical_report'),
     reportHash: varchar('report_hash', { length: 66 }),
     outcome: verificationOutcomeEnum('outcome').$type<VerificationOutcome>(),
@@ -384,7 +387,7 @@ export const verificationOperations = pgTable(
     ),
     uniqueIndex('verification_operations_active_job_unique')
       .on(table.jobId)
-      .where(sql`${table.status} in ('CREATED', 'EVALUATED', 'STORING')`),
+      .where(sql`${table.status} in ('CREATED', 'COMPUTING', 'EVALUATED', 'STORING')`),
     index('verification_operations_status_updated_at_idx').on(table.status, table.updatedAt),
   ],
 );
@@ -404,6 +407,7 @@ export const verificationRuns = pgTable(
     scoreBps: smallint('score_bps').notNull(),
     minimumScoreBps: smallint('minimum_score_bps').notNull(),
     verifierVersion: varchar('verifier_version', { length: 100 }).notNull(),
+    aiResult: jsonb('ai_result').$type<AiVerificationSignal>(),
     startedAt: timestamp('started_at', { withTimezone: true, mode: 'date' }).notNull(),
     completedAt: timestamp('completed_at', { withTimezone: true, mode: 'date' }).notNull(),
   },

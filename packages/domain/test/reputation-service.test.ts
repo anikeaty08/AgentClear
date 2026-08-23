@@ -66,6 +66,7 @@ function verification(outcome: 'PASS' | 'FAIL'): VerificationRecord {
     scoreBps: outcome === 'PASS' ? 10_000 : 0,
     minimumScoreBps: 10_000,
     verifierVersion: 'agentclear-deterministic-v1',
+    ai: null,
     reportHash: `0x${'2'.repeat(64)}`,
     reportStorageRootHash: reportRoot,
     reportStorageTransactionHash: `0x${'3'.repeat(64)}`,

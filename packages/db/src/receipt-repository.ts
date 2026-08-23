@@ -213,6 +213,7 @@ export class PostgresReceiptRepository implements ReceiptRepository {
         scoreBps: row.verification.scoreBps,
         minimumScoreBps: row.verification.minimumScoreBps,
         verifierVersion: row.verification.verifierVersion,
+        ai: row.verification.aiResult,
         reportHash: row.report.reportHash as `0x${string}`,
         reportStorageRootHash: row.report.storageRootHash as `0x${string}`,
         reportStorageTransactionHash: row.report.storageTransactionHash as `0x${string}` | null,

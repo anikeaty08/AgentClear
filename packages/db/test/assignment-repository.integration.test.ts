@@ -125,6 +125,11 @@ describe.skipIf(databaseUrl === undefined)('PostgresAssignmentRepository', () =>
           mode: 'ai',
           minimumScore: 1,
           requirements: ['All supplied tests pass'],
+          rubric: {
+            criteria: [
+              { id: 'correctness', description: 'The deliverable is correct.', weightBps: 10_000 },
+            ],
+          },
         },
         refundPolicy: { onExpiry: true, onFinalFailure: true },
       },

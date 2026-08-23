@@ -40,12 +40,50 @@ export const deterministicCheckSchema = z.discriminatedUnion('kind', [
 ]);
 
 export type DeterministicCheck = z.infer<typeof deterministicCheckSchema>;
+export const rubricCriterionSchema = z
+  .object({
+    id: z.string().regex(/^[A-Za-z0-9._:-]{1,100}$/),
+    description: z.string().trim().min(1).max(1_000),
+    weightBps: z.number().int().min(1).max(10_000),
+  })
+  .strict();
+
+export const verificationRubricSchema = z
+  .object({
+    criteria: z.array(rubricCriterionSchema).min(1).max(20),
+  })
+  .strict()
+  .superRefine((rubric, context) => {
+    const ids = new Set<string>();
+    let totalWeightBps = 0;
+    for (const [index, criterion] of rubric.criteria.entries()) {
+      if (ids.has(criterion.id)) {
+        context.addIssue({
+          code: 'custom',
+          path: ['criteria', index, 'id'],
+          message: 'Rubric criterion IDs must be unique.',
+        });
+      }
+      ids.add(criterion.id);
+      totalWeightBps += criterion.weightBps;
+    }
+    if (totalWeightBps !== 10_000) {
+      context.addIssue({
+        code: 'custom',
+        path: ['criteria'],
+        message: 'Rubric criterion weights must total exactly 10000 basis points.',
+      });
+    }
+  });
+
+export type VerificationRubric = z.infer<typeof verificationRubricSchema>;
 const verificationSchema = z
   .object({
     mode: z.enum(['deterministic', 'rubric', 'ai', 'deterministic_plus_ai']),
     minimumScore: z.number().min(0).max(1),
     requirements: z.array(z.string().trim().min(1).max(500)).min(1).max(50),
     deterministicChecks: z.array(deterministicCheckSchema).min(1).max(50).optional(),
+    rubric: verificationRubricSchema.optional(),
   })
   .strict()
   .superRefine((verification, context) => {
@@ -63,6 +101,21 @@ const verificationSchema = z
         code: 'custom',
         path: ['deterministicChecks'],
         message: 'Deterministic checks require a deterministic verification mode.',
+      });
+    }
+    const aiMode = verification.mode !== 'deterministic';
+    if (aiMode && verification.rubric === undefined) {
+      context.addIssue({
+        code: 'custom',
+        path: ['rubric'],
+        message: 'AI verification modes require a machine-readable rubric.',
+      });
+    }
+    if (!aiMode && verification.rubric !== undefined) {
+      context.addIssue({
+        code: 'custom',
+        path: ['rubric'],
+        message: 'A rubric requires an AI verification mode.',
       });
     }
     const seen = new Set<string>();

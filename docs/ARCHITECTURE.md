@@ -57,7 +57,7 @@ CREATED -> PREPARED -> BROADCAST -> CONFIRMED
 
 The job stays `QUOTED` until funding receipt and state attestation both succeed. Assignment first records `FUNDED -> OPEN`; it records `OPEN -> ASSIGNED` only after the provider stored in the escrow matches the request. Each confirmation updates the operation, escrow record, job state, and immutable state event in one database transaction. Serialized signed transactions are cleared after confirmation and are never returned by REST. A per-job base-unit spending ceiling and separate `jobs:fund` and `jobs:assign` scopes are enforced before signing.
 
-Funding, assignment, 0G Storage submission, verification publication, outcome anchoring, settlement, ERC-8004 feedback, and receipt publication reuse one configured signer. A PostgreSQL session advisory lock spans each complete external operation, including preparation, persistence, broadcast/upload, confirmation, and database finalization, so independent API instances cannot concurrently consume its nonce. Repository transactions take a separate state lock, and any unfinished signed or storage operation blocks unrelated writes until it is resumed with its original idempotency key. This protects local, restart, and multi-instance recovery. Automated stale-operation reconciliation and hardened external signer custody remain release blockers.
+Funding, assignment, 0G Storage submission, verification publication, outcome anchoring, settlement, ERC-8004 feedback, and receipt publication reuse one configured protocol signer. 0G Compute requires a separate, least-privilege signer. A PostgreSQL session advisory lock spans each complete external operation, including preparation, persistence, broadcast/upload, confirmation, and database finalization, so independent API instances cannot concurrently consume protocol nonces or overlap paid boundaries. Repository transactions take a separate state lock, and any unfinished signed, storage, or Compute operation blocks unrelated writes until it is safely resumed or reconciled. Automated stale-operation reconciliation and hardened external signer custody remain release blockers.
 
 Provider agent identifiers are syntax-checked and agreement-constrained during assignment. ERC-8004 feedback resolves the token through `IdentityRegistry.ownerOf` and rejects self-feedback, but assignment itself does not yet prove token ownership or bind the identity token to the provider payment address.
 
@@ -74,20 +74,22 @@ ASSIGNED -> IN_PROGRESS -> SUBMITTED
 
 The REST response contains evidence metadata, never the stored canonical payload. Confirmation clears the payload from the operation row. The production adapter is implemented against the current official SDK, but no live 0G Storage call has been exercised from this repository yet; automated API integration uses a controlled port implementation and does not claim network behavior.
 
-## Deterministic verification boundary
+## Verification and 0G Compute boundary
 
 The agreement carries typed deterministic checks instead of asking the verifier to infer rules from prose. `VerificationService` proof-downloads the latest submission, verifies its SHA-256 commitment and manifest bindings, evaluates paths with exact JSON semantics, and calculates an integer weighted score. Hard failures dominate. Reports identify the agreement, submission, verifier version, individual checks, score, and outcome.
 
-The database makes report publication recoverable:
+AI modes also require an explicit weighted rubric. Domain code constructs and hashes canonical prompt JSON; the 0G adapter validates the configured on-chain provider, advertised model, account balance, and TEE acknowledgement, gets SDK billing headers, sends one bounded inference request, calls `processResponse`, and strictly parses the result. Domain code recomputes rubric totals and applies hard-gate consensus rather than averaging away a deterministic failure.
+
+The database makes report publication recoverable and prevents an ambiguous paid call from being repeated:
 
 ```text
 SUBMITTED -> VERIFYING -> PASSED | FAILED | NEEDS_REVIEW
                     |
-                    `-> CREATED -> EVALUATED -> STORING -> CONFIRMED
-                                  persist exact report     clear payload
+                    `-> CREATED -> COMPUTING -> EVALUATED -> STORING -> CONFIRMED
+                                  prompt hash   persist exact report     clear payload
 ```
 
-`deterministic_plus_ai` never silently substitutes a model. A deterministic hard failure can produce `FAIL`; otherwise the outcome is `NEEDS_REVIEW` until a real 0G Compute run is available.
+`deterministic_plus_ai` never silently substitutes a model. A deterministic hard failure produces `FAIL`; unverified AI output produces `NEEDS_REVIEW`; both required signals must independently reach the threshold for `PASS`. A process interruption during `COMPUTING` produces an explicit reconciliation-required error instead of a duplicate paid request. See `docs/COMPUTE.md`.
 
 ## Outcome and settlement boundary
 
@@ -146,4 +148,4 @@ agreement -> 0G Chain escrow -> 0G Storage submission evidence
           -> outcome anchor -> settle/refund -> ERC-8004 feedback -> receipt
 ```
 
-Outcome anchoring, settlement/refund, ERC-8004 feedback, and portable receipts are now implemented locally. The sandbox and Compute boundaries remain planned and do not report simulated success. Each adapter exposes degraded health until it has valid configuration, and integration tests distinguish local contract tests from live 0G testnet proof.
+Outcome anchoring, settlement/refund, ERC-8004 feedback, portable receipts, and the real 0G Compute SDK adapter are implemented locally. The sandbox remains planned. Each adapter exposes degraded health until it has valid configuration, and integration tests distinguish controlled local boundaries from live 0G testnet proof.

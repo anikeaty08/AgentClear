@@ -12,7 +12,7 @@ Mutating routes require an `Idempotency-Key` containing 8-255 ASCII letters, dig
 
 ## Health
 
-`GET /health` reports process liveness. `GET /ready` verifies PostgreSQL and, when configured, the chain ID, escrow bytecode, outcome-registry bytecode, ERC-8004 registry bytecode/linkage, and 0G Storage indexer. A configured but unavailable integration makes readiness fail without exposing credentials.
+`GET /health` reports process liveness. `GET /ready` verifies PostgreSQL and, when configured, the chain ID, escrow bytecode, outcome-registry bytecode, ERC-8004 registry bytecode/linkage, 0G Storage indexer, and selected 0G Compute provider/model/account/TEE status. A configured but unavailable integration makes readiness fail without exposing credentials.
 
 ## Create a job
 
@@ -107,13 +107,13 @@ The operator bootstrap key cannot submit on behalf of a provider. The temporary 
 
 ## Verify a result
 
-`POST /v1/jobs/:id/verify` requires `jobs:verify`, an idempotency key, an empty object body, and configured evidence storage. Deterministic modes must define explicit `deterministicChecks` in the agreement; prose requirements are never interpreted as executable rules after funding.
+`POST /v1/jobs/:id/verify` requires `jobs:verify`, an idempotency key, an empty object body, and configured evidence storage. Deterministic modes must define explicit `deterministicChecks` in the agreement; prose requirements are never interpreted as executable rules after funding. `rubric`, `ai`, and `deterministic_plus_ai` modes require a machine-readable `rubric` whose unique criterion weights total 10,000 basis points, plus complete 0G Compute configuration.
 
-Supported checks are `json_path_exists`, `json_path_equals`, and `json_type`. Paths are arrays of object keys and array indices. Weights use integer basis points and are normalized to a 0-10,000 score. Any failed check marked `hardFailure` forces `FAIL`. A pure deterministic job passes only when its score reaches `minimumScore`. `deterministic_plus_ai` can fail immediately on a hard deterministic failure, but otherwise returns `NEEDS_REVIEW` until the real Compute signal exists.
+Supported checks are `json_path_exists`, `json_path_equals`, and `json_type`. Paths are arrays of object keys and array indices. Weights use integer basis points and are normalized to a 0-10,000 score. Any failed check marked `hardFailure` forces `FAIL`. A pure deterministic job passes only when its score reaches `minimumScore`. 0G Compute returns strict criterion JSON; AgentClear recomputes weighted totals and requires each deterministic/AI signal to pass independently. An invalid or unverifiable response cannot settle and becomes `NEEDS_REVIEW` when a report can be safely produced.
 
 Verification proof-downloads the submission, checks its SHA-256 commitment and manifest identities, records `SUBMITTED -> VERIFYING`, evaluates the frozen agreement policy, persists the exact canonical report before upload, proof-stores that report, then records `PASSED`, `FAILED`, or `NEEDS_REVIEW`. Retrying with the same key resumes the same report. Confirmed operation payloads are cleared.
 
-`GET /v1/jobs/:id/verifications` requires `jobs:read` and returns score, outcome, individual check results, verifier version, report commitment, and Storage metadata.
+`GET /v1/jobs/:id/verifications` requires `jobs:read` and returns score, outcome, individual check results, optional Compute provider/model/chat/prompt/rubric metadata, verifier version, report commitment, and Storage metadata. If execution stopped after a potentially paid request was dispatched, exact retry returns `COMPUTE_RECONCILIATION_REQUIRED` and does not dispatch another request.
 
 ## Settle or refund a verified job
 
@@ -151,4 +151,4 @@ When both reputation and Storage are configured, the same request then publishes
 }
 ```
 
-Stable codes currently include `AUTHENTICATION_REQUIRED`, `INSUFFICIENT_SCOPE`, `INVALID_REQUEST`, `RATE_LIMIT_EXCEEDED`, `JOB_NOT_FOUND`, `JOB_DEADLINE_NOT_FUTURE`, `INVALID_JOB_TRANSITION`, `IDEMPOTENCY_KEY_REUSED`, `CHAIN_UNAVAILABLE`, `CHAIN_OPERATION_FAILED`, `CHAIN_SIGNER_BUSY`, `JOB_FUNDING_IN_PROGRESS`, `JOB_ASSIGNMENT_IN_PROGRESS`, `PROVIDER_MISMATCH`, `PROVIDER_NOT_AUTHORIZED`, `SUBMISSION_IN_PROGRESS`, `SUBMISSION_TOO_LARGE`, `VERIFICATION_IN_PROGRESS`, `VERIFICATION_POLICY_UNSUPPORTED`, `EVIDENCE_INTEGRITY_FAILED`, `SETTLEMENT_IN_PROGRESS`, `JOB_NOT_SETTLEABLE`, `REPUTATION_IN_PROGRESS`, `JOB_NOT_REPUTABLE`, `RECEIPT_IN_PROGRESS`, `JOB_NOT_RECEIPTABLE`, `RECEIPT_NOT_FOUND`, `RECEIPT_TOO_LARGE`, `RECEIPT_INTEGRITY_FAILED`, `STORAGE_UNAVAILABLE`, `STORAGE_OPERATION_FAILED`, `SPENDING_POLICY_EXCEEDED`, and `INTERNAL_ERROR`.
+Stable codes currently include `AUTHENTICATION_REQUIRED`, `INSUFFICIENT_SCOPE`, `INVALID_REQUEST`, `RATE_LIMIT_EXCEEDED`, `JOB_NOT_FOUND`, `JOB_DEADLINE_NOT_FUTURE`, `INVALID_JOB_TRANSITION`, `IDEMPOTENCY_KEY_REUSED`, `CHAIN_UNAVAILABLE`, `CHAIN_OPERATION_FAILED`, `CHAIN_SIGNER_BUSY`, `JOB_FUNDING_IN_PROGRESS`, `JOB_ASSIGNMENT_IN_PROGRESS`, `PROVIDER_MISMATCH`, `PROVIDER_NOT_AUTHORIZED`, `SUBMISSION_IN_PROGRESS`, `SUBMISSION_TOO_LARGE`, `VERIFICATION_IN_PROGRESS`, `VERIFICATION_POLICY_UNSUPPORTED`, `COMPUTE_UNAVAILABLE`, `COMPUTE_OPERATION_FAILED`, `COMPUTE_RECONCILIATION_REQUIRED`, `EVIDENCE_INTEGRITY_FAILED`, `SETTLEMENT_IN_PROGRESS`, `JOB_NOT_SETTLEABLE`, `REPUTATION_IN_PROGRESS`, `JOB_NOT_REPUTABLE`, `RECEIPT_IN_PROGRESS`, `JOB_NOT_RECEIPTABLE`, `RECEIPT_NOT_FOUND`, `RECEIPT_TOO_LARGE`, `RECEIPT_INTEGRITY_FAILED`, `STORAGE_UNAVAILABLE`, `STORAGE_OPERATION_FAILED`, `SPENDING_POLICY_EXCEEDED`, and `INTERNAL_ERROR`.

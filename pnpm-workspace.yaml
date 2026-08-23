@@ -5,11 +5,13 @@ packages:
 strictDepBuilds: true
 
 allowBuilds:
+  blake-hash: false
   bufferutil: false
   es5-ext: false
   esbuild: true
   utf-8-validate: false
 
 overrides:
+  adm-zip: 0.6.0
   axios: 1.19.0
   ws: 8.21.3

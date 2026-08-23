@@ -5,13 +5,22 @@ import { z } from 'zod';
 import { canonicalJson, sha256Bytes, sha256Commitment, type JsonValue } from './canonical.js';
 import {
   DomainError,
+  ComputeOperationFailedError,
+  ComputeReconciliationRequiredError,
+  ComputeUnavailableError,
   EvidenceIntegrityFailedError,
   JobNotFoundError,
   StorageOperationFailedError,
   VerificationPolicyUnsupportedError,
 } from './errors.js';
 import { InMemoryExclusiveExecutor, type ExclusiveExecutor } from './exclusive-executor.js';
-import type { DeterministicCheck, Job, JobActor, JobStateEvent } from './job.js';
+import type {
+  DeterministicCheck,
+  Job,
+  JobActor,
+  JobStateEvent,
+  VerificationRubric,
+} from './job.js';
 import type { IdempotencyClaim, JobRepository } from './job-repository.js';
 import {
   submissionManifestSchema,
@@ -24,7 +33,12 @@ import {
 export const verifyResultInputSchema = z.object({}).strict();
 
 export type VerificationOutcome = 'PASS' | 'FAIL' | 'NEEDS_REVIEW';
-export type VerificationOperationStatus = 'CREATED' | 'EVALUATED' | 'STORING' | 'CONFIRMED';
+export type VerificationOperationStatus =
+  | 'CREATED'
+  | 'COMPUTING'
+  | 'EVALUATED'
+  | 'STORING'
+  | 'CONFIRMED';
 
 export type VerificationCheckResult = {
   id: string;
@@ -39,7 +53,7 @@ export type VerificationCheckResult = {
   message: string;
 };
 
-export type VerificationReport = {
+export type VerificationReportV1 = {
   version: '1';
   runId: string;
   jobId: string;
@@ -60,6 +74,62 @@ export type VerificationReport = {
   completedAt: string;
 };
 
+export const AI_VERIFIER_PROMPT_VERSION = 'agentclear-rubric-v1' as const;
+
+export const aiCriterionResultSchema = z
+  .object({
+    id: z.string().min(1).max(100),
+    scoreBps: z.number().int().min(0).max(10_000),
+    confidenceBps: z.number().int().min(0).max(10_000),
+    explanation: z.string().trim().min(1).max(2_000),
+  })
+  .strict();
+
+export const aiVerificationResultSchema = z
+  .object({
+    providerAddress: z.string().regex(/^0x[0-9a-fA-F]{40}$/),
+    model: z.string().trim().min(1).max(300),
+    chatId: z.string().trim().min(1).max(500),
+    scoreBps: z.number().int().min(0).max(10_000),
+    confidenceBps: z.number().int().min(0).max(10_000),
+    criteria: z.array(aiCriterionResultSchema).min(1).max(20),
+    usage: z.json(),
+    rawResponse: z.string().min(1),
+    responseVerified: z.boolean().nullable(),
+  })
+  .strict();
+
+export type AiVerificationResult = z.infer<typeof aiVerificationResultSchema>;
+
+export type AiVerificationRequest = {
+  runId: string;
+  jobId: string;
+  promptVersion: typeof AI_VERIFIER_PROMPT_VERSION;
+  canonicalPrompt: string;
+  promptHash: `0x${string}`;
+};
+
+export interface AiVerifier {
+  preflight(request: AiVerificationRequest): Promise<void>;
+  evaluate(request: AiVerificationRequest): Promise<AiVerificationResult>;
+}
+
+export type AiVerificationSignal = AiVerificationResult & {
+  promptVersion: typeof AI_VERIFIER_PROMPT_VERSION;
+  promptHash: `0x${string}`;
+};
+
+export type VerificationReportV2 = Omit<VerificationReportV1, 'version' | 'verifier'> & {
+  version: '2';
+  ai: AiVerificationSignal | null;
+  verifier: {
+    kind: 'policy';
+    version: 'agentclear-verification-v2';
+  };
+};
+
+export type VerificationReport = VerificationReportV1 | VerificationReportV2;
+
 const verificationCheckResultSchema = z
   .object({
     id: z.string().min(1).max(100),
@@ -75,7 +145,7 @@ const verificationCheckResultSchema = z
   })
   .strict();
 
-export const verificationReportSchema = z
+const verificationReportV1Schema = z
   .object({
     version: z.literal('1'),
     runId: z.uuid(),
@@ -120,6 +190,68 @@ export const verificationReportSchema = z
     }
   });
 
+const aiVerificationSignalSchema = aiVerificationResultSchema.extend({
+  promptVersion: z.literal(AI_VERIFIER_PROMPT_VERSION),
+  promptHash: z.string().regex(/^0x[0-9a-fA-F]{64}$/),
+});
+
+const verificationReportV2Schema = z
+  .object({
+    version: z.literal('2'),
+    runId: z.uuid(),
+    jobId: z.uuid(),
+    agreementHash: z.string().regex(/^0x[0-9a-fA-F]{64}$/),
+    submissionId: z.uuid(),
+    submissionHash: z.string().regex(/^0x[0-9a-fA-F]{64}$/),
+    submissionStorageRoot: z.string().regex(/^0x[0-9a-fA-F]{64}$/),
+    mode: z.enum(['deterministic', 'rubric', 'ai', 'deterministic_plus_ai']),
+    minimumScoreBps: z.number().int().min(0).max(10_000),
+    scoreBps: z.number().int().min(0).max(10_000),
+    outcome: z.enum(['PASS', 'FAIL', 'NEEDS_REVIEW']),
+    checks: z.array(verificationCheckResultSchema).max(50),
+    ai: aiVerificationSignalSchema.nullable(),
+    verifier: z
+      .object({
+        kind: z.literal('policy'),
+        version: z.literal('agentclear-verification-v2'),
+      })
+      .strict(),
+    startedAt: z.iso.datetime({ offset: true }),
+    completedAt: z.iso.datetime({ offset: true }),
+  })
+  .strict()
+  .superRefine((report, context) => {
+    if (Date.parse(report.completedAt) < Date.parse(report.startedAt)) {
+      context.addIssue({
+        code: 'custom',
+        path: ['completedAt'],
+        message: 'Verification completion cannot precede its start.',
+      });
+    }
+    const ids = new Set<string>();
+    for (const [index, check] of report.checks.entries()) {
+      if (ids.has(check.id)) {
+        context.addIssue({
+          code: 'custom',
+          path: ['checks', index, 'id'],
+          message: 'Verification check IDs must be unique.',
+        });
+      }
+      ids.add(check.id);
+    }
+    if (report.mode === 'deterministic' && report.ai !== null) {
+      context.addIssue({ code: 'custom', path: ['ai'], message: 'Deterministic reports cannot contain an AI signal.' });
+    }
+    if (report.mode !== 'deterministic' && report.outcome !== 'FAIL' && report.ai === null) {
+      context.addIssue({ code: 'custom', path: ['ai'], message: 'Non-deterministic reports require an AI signal unless deterministic policy failed hard.' });
+    }
+  });
+
+export const verificationReportSchema = z.union([
+  verificationReportV1Schema,
+  verificationReportV2Schema,
+]);
+
 export type VerificationOperation = {
   id: string;
   runId: string;
@@ -127,6 +259,7 @@ export type VerificationOperation = {
   submissionId: string;
   status: VerificationOperationStatus;
   startedAt: string;
+  computePromptHash: `0x${string}` | null;
   canonicalReport: string | null;
   reportHash: `0x${string}` | null;
   outcome: VerificationOutcome | null;
@@ -151,6 +284,7 @@ export type VerificationRecord = {
   scoreBps: number;
   minimumScoreBps: number;
   verifierVersion: string;
+  ai: AiVerificationSignal | null;
   reportHash: `0x${string}`;
   reportStorageRootHash: `0x${string}`;
   reportStorageTransactionHash: `0x${string}` | null;
@@ -183,6 +317,12 @@ export type RecordEvaluationInput = {
   updatedAt: string;
 };
 
+export type MarkVerificationComputingInput = {
+  operationId: string;
+  promptHash: `0x${string}`;
+  updatedAt: string;
+};
+
 export type ConfirmVerificationInput = {
   operationId: string;
   report: VerificationReport;
@@ -192,6 +332,7 @@ export type ConfirmVerificationInput = {
 
 export interface VerificationRepository {
   beginVerification(input: BeginVerificationInput): Promise<VerificationPersistenceResult>;
+  markComputing(input: MarkVerificationComputingInput): Promise<VerificationOperation>;
   recordEvaluation(input: RecordEvaluationInput): Promise<VerificationOperation>;
   markReportStoring(operationId: string, updatedAt: string): Promise<VerificationOperation>;
   confirmVerification(input: ConfirmVerificationInput): Promise<VerificationPersistenceResult>;
@@ -294,6 +435,115 @@ export function determineVerificationOutcome(
   return 'NEEDS_REVIEW';
 }
 
+export function createAiVerificationRequest(input: {
+  runId: string;
+  job: Job;
+  result: JsonValue;
+  rubric: VerificationRubric;
+}): AiVerificationRequest {
+  const canonicalPrompt = canonicalJson({
+    version: AI_VERIFIER_PROMPT_VERSION,
+    instruction:
+      'Evaluate only the supplied deliverable against every rubric criterion. Return strict JSON with scoreBps, confidenceBps, and one result per criterion. Do not infer missing evidence.',
+    task: {
+      title: input.job.agreement.title,
+      description: input.job.agreement.description,
+      deliverable: input.job.agreement.deliverable,
+      requirements: input.job.agreement.verification.requirements,
+      rubric: input.rubric,
+    },
+    deliverableResult: input.result,
+    responseContract: {
+      scoreBps: 'integer 0..10000; weighted score implied by criteria',
+      confidenceBps: 'integer 0..10000; weighted confidence implied by criteria',
+      criteria: [
+        {
+          id: 'exact rubric criterion id',
+          scoreBps: 'integer 0..10000',
+          confidenceBps: 'integer 0..10000',
+          explanation: 'short evidence-based explanation',
+        },
+      ],
+    },
+  });
+  return {
+    runId: input.runId,
+    jobId: input.job.id,
+    promptVersion: AI_VERIFIER_PROMPT_VERSION,
+    canonicalPrompt,
+    promptHash: sha256Bytes(new TextEncoder().encode(canonicalPrompt)),
+  };
+}
+
+export function validateAiVerificationResult(
+  rawResult: unknown,
+  rubric: VerificationRubric,
+): AiVerificationResult {
+  const result = aiVerificationResultSchema.parse(rawResult);
+  const expectedCriteria = new Map(
+    rubric.criteria.map((criterion) => [criterion.id, criterion] as const),
+  );
+  const actualIds = new Set<string>();
+  let weightedScore = 0;
+  let weightedConfidence = 0;
+  for (const criterion of result.criteria) {
+    if (actualIds.has(criterion.id)) {
+      throw new ComputeOperationFailedError();
+    }
+    actualIds.add(criterion.id);
+    const configured = expectedCriteria.get(criterion.id);
+    if (configured === undefined) throw new ComputeOperationFailedError();
+    weightedScore += criterion.scoreBps * configured.weightBps;
+    weightedConfidence += criterion.confidenceBps * configured.weightBps;
+  }
+  if (actualIds.size !== expectedCriteria.size) throw new ComputeOperationFailedError();
+  if (Math.round(weightedScore / 10_000) !== result.scoreBps) {
+    throw new ComputeOperationFailedError();
+  }
+  if (Math.round(weightedConfidence / 10_000) !== result.confidenceBps) {
+    throw new ComputeOperationFailedError();
+  }
+  return result;
+}
+
+export function determinePolicyVerificationResult(input: {
+  mode: Job['agreement']['verification']['mode'];
+  deterministicScoreBps: number;
+  deterministicHardFailure: boolean;
+  ai: AiVerificationResult | null;
+  minimumScoreBps: number;
+  requireVerifiedAiResponse: boolean;
+}): { outcome: VerificationOutcome; scoreBps: number } {
+  if (input.deterministicHardFailure) {
+    return { outcome: 'FAIL', scoreBps: input.deterministicScoreBps };
+  }
+  if (input.mode === 'deterministic') {
+    return {
+      outcome: input.deterministicScoreBps >= input.minimumScoreBps ? 'PASS' : 'FAIL',
+      scoreBps: input.deterministicScoreBps,
+    };
+  }
+  if (input.ai === null) {
+    return { outcome: 'NEEDS_REVIEW', scoreBps: input.deterministicScoreBps };
+  }
+  const scoreBps = input.mode === 'deterministic_plus_ai'
+    ? Math.min(input.deterministicScoreBps, input.ai.scoreBps)
+    : input.ai.scoreBps;
+  if (
+    input.ai.responseVerified === false
+    || (input.requireVerifiedAiResponse && input.ai.responseVerified !== true)
+  ) {
+    return { outcome: 'NEEDS_REVIEW', scoreBps };
+  }
+  if (
+    input.mode === 'deterministic_plus_ai'
+    && input.deterministicScoreBps < input.minimumScoreBps
+  ) {
+    return { outcome: 'FAIL', scoreBps };
+  }
+  return { outcome: input.ai.scoreBps >= input.minimumScoreBps ? 'PASS' : 'FAIL', scoreBps };
+}
+
 export class VerificationQueryService {
   public constructor(
     private readonly jobRepository: JobRepository,
@@ -311,6 +561,8 @@ export class VerificationService {
   readonly #submissionRepository: SubmissionRepository;
   readonly #repository: VerificationRepository;
   readonly #storage: EvidenceStore;
+  readonly #aiVerifier: AiVerifier | undefined;
+  readonly #requireVerifiedAiResponse: boolean;
   readonly #maxReportBytes: number;
   readonly #executor: ExclusiveExecutor;
   readonly #clock: () => Date;
@@ -321,6 +573,8 @@ export class VerificationService {
     submissionRepository: SubmissionRepository;
     verificationRepository: VerificationRepository;
     storage: EvidenceStore;
+    aiVerifier?: AiVerifier;
+    requireVerifiedAiResponse?: boolean;
     maxReportBytes: number;
     executor?: ExclusiveExecutor;
     clock?: () => Date;
@@ -333,6 +587,8 @@ export class VerificationService {
     this.#submissionRepository = dependencies.submissionRepository;
     this.#repository = dependencies.verificationRepository;
     this.#storage = dependencies.storage;
+    this.#aiVerifier = dependencies.aiVerifier;
+    this.#requireVerifiedAiResponse = dependencies.requireVerifiedAiResponse ?? true;
     this.#maxReportBytes = dependencies.maxReportBytes;
     this.#executor = dependencies.executor ?? new InMemoryExclusiveExecutor();
     this.#clock = dependencies.clock ?? (() => new Date());
@@ -355,6 +611,9 @@ export class VerificationService {
       if (job.agreement.verification.mode === 'deterministic' && configuredChecks.length === 0) {
         throw new VerificationPolicyUnsupportedError();
       }
+      if (job.agreement.verification.mode !== 'deterministic' && this.#aiVerifier === undefined) {
+        throw new ComputeUnavailableError();
+      }
 
       const now = this.#clock();
       const runId = this.#idGenerator();
@@ -368,6 +627,7 @@ export class VerificationService {
           submissionId: submission.id,
           status: 'CREATED',
           startedAt: now.toISOString(),
+          computePromptHash: null,
           canonicalReport: null,
           reportHash: null,
           outcome: null,
@@ -402,6 +662,9 @@ export class VerificationService {
         },
       });
       if (persisted.operation.status === 'CONFIRMED') return persisted;
+      if (persisted.operation.status === 'COMPUTING') {
+        throw new ComputeReconciliationRequiredError(persisted.operation.runId);
+      }
 
       try {
         if (persisted.operation.status === 'CREATED') {
@@ -479,8 +742,8 @@ export class VerificationService {
             fromState: 'VERIFYING',
             toState: targetState,
             actorType: 'verifier',
-            actorId: 'agentclear-deterministic-v1',
-            reason: `Deterministic verification completed with ${report.outcome}.`,
+            actorId: report.verifier.version,
+            reason: `Evidence verification completed with ${report.outcome}.`,
             ...(storage.transactionHash === null ? {} : { transactionHash: storage.transactionHash }),
             evidenceReference: `0g://${storage.rootHash}`,
             occurredAt: this.#clock().toISOString(),
@@ -523,14 +786,42 @@ export class VerificationService {
       job.agreement.verification.deterministicChecks ?? [],
       manifest.deliverable.result as JsonValue,
     );
-    const outcome = determineVerificationOutcome(
-      job.agreement.verification.mode,
-      evaluated.scoreBps,
-      job.minimumScoreBps,
-      evaluated.hardFailure,
-    );
+    let aiResult: AiVerificationResult | null = null;
+    const requiresAi = job.agreement.verification.mode !== 'deterministic';
+    if (requiresAi && !evaluated.hardFailure) {
+      const rubric = job.agreement.verification.rubric;
+      if (rubric === undefined || this.#aiVerifier === undefined) {
+        throw new VerificationPolicyUnsupportedError();
+      }
+      const request = createAiVerificationRequest({
+        runId: operation.runId,
+        job,
+        result: manifest.deliverable.result as JsonValue,
+        rubric,
+      });
+      try {
+        await this.#aiVerifier.preflight(request);
+        await this.#repository.markComputing({
+          operationId: operation.id,
+          promptHash: request.promptHash,
+          updatedAt: this.#clock().toISOString(),
+        });
+        aiResult = validateAiVerificationResult(await this.#aiVerifier.evaluate(request), rubric);
+      } catch (error) {
+        if (error instanceof DomainError) throw error;
+        throw new ComputeOperationFailedError();
+      }
+    }
+    const decision = determinePolicyVerificationResult({
+      mode: job.agreement.verification.mode,
+      deterministicScoreBps: evaluated.scoreBps,
+      deterministicHardFailure: evaluated.hardFailure,
+      ai: aiResult,
+      minimumScoreBps: job.minimumScoreBps,
+      requireVerifiedAiResponse: this.#requireVerifiedAiResponse,
+    });
     return {
-      version: '1',
+      version: '2',
       runId: operation.runId,
       jobId: job.id,
       agreementHash: job.agreementHash,
@@ -539,10 +830,22 @@ export class VerificationService {
       submissionStorageRoot: submission.storageRootHash,
       mode: job.agreement.verification.mode,
       minimumScoreBps: job.minimumScoreBps,
-      scoreBps: evaluated.scoreBps,
-      outcome,
+      scoreBps: decision.scoreBps,
+      outcome: decision.outcome,
       checks: evaluated.checks,
-      verifier: { kind: 'deterministic', version: 'agentclear-deterministic-v1' },
+      ai: aiResult === null
+        ? null
+        : {
+            ...aiResult,
+            promptVersion: AI_VERIFIER_PROMPT_VERSION,
+            promptHash: createAiVerificationRequest({
+              runId: operation.runId,
+              job,
+              result: manifest.deliverable.result as JsonValue,
+              rubric: job.agreement.verification.rubric!,
+            }).promptHash,
+          },
+      verifier: { kind: 'policy', version: 'agentclear-verification-v2' },
       startedAt: operation.startedAt,
       completedAt: this.#clock().toISOString(),
     };

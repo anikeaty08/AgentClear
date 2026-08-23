@@ -159,4 +159,56 @@ describe('loadRuntimeConfig', () => {
       maxPayloadBytes: 8_192,
     });
   });
+
+  it('requires complete 0G Compute settings and maps conservative defaults', () => {
+    expect(() =>
+      loadRuntimeConfig({
+        ...validEnvironment,
+        COMPUTE_RPC_URL: 'https://evmrpc-testnet.0g.ai',
+      }),
+    ).toThrow('All required 0G Compute settings must be configured together.');
+
+    const config = loadRuntimeConfig({
+      ...validEnvironment,
+      COMPUTE_RPC_URL: 'https://evmrpc-testnet.0g.ai',
+      COMPUTE_SIGNER_PRIVATE_KEY: `0x${'5'.repeat(64)}`,
+      COMPUTE_PROVIDER_ADDRESS: `0x${'6'.repeat(40)}`,
+      COMPUTE_MODEL: 'verified-model',
+    });
+    expect(config.compute).toEqual({
+      rpcUrl: 'https://evmrpc-testnet.0g.ai',
+      signerPrivateKey: `0x${'5'.repeat(64)}`,
+      providerAddress: `0x${'6'.repeat(40)}`,
+      model: 'verified-model',
+      timeoutMs: 120_000,
+      maxResponseBytes: 1_048_576,
+      requireTee: true,
+    });
+    expect(loadRuntimeConfig({
+      ...validEnvironment,
+      COMPUTE_RPC_URL: 'https://evmrpc-testnet.0g.ai',
+      COMPUTE_SIGNER_PRIVATE_KEY: `0x${'5'.repeat(64)}`,
+      COMPUTE_PROVIDER_ADDRESS: `0x${'6'.repeat(40)}`,
+      COMPUTE_REQUIRE_TEE: 'false',
+    }).compute?.requireTee).toBe(false);
+  });
+
+  it('requires separate protocol and Compute signer keys', () => {
+    const sharedKey = `0x${'5'.repeat(64)}`;
+    expect(() =>
+      loadRuntimeConfig({
+        ...validEnvironment,
+        CHAIN_RPC_URL: 'http://127.0.0.1:8545',
+        CHAIN_ID: '31337',
+        CHAIN_NAME: 'AgentClear Anvil',
+        CHAIN_NATIVE_CURRENCY_SYMBOL: 'A0GI',
+        JOB_ESCROW_ADDRESS: `0x${'1'.repeat(40)}`,
+        CHAIN_SIGNER_PRIVATE_KEY: sharedKey,
+        CHAIN_MAX_PER_JOB_BASE_UNITS: '5000000000000000000',
+        COMPUTE_RPC_URL: 'https://evmrpc-testnet.0g.ai',
+        COMPUTE_SIGNER_PRIVATE_KEY: sharedKey,
+        COMPUTE_PROVIDER_ADDRESS: `0x${'6'.repeat(40)}`,
+      }),
+    ).toThrow('0G Compute and protocol chain writers must use separate signer keys.');
+  });
 });

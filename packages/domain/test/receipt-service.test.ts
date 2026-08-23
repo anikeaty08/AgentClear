@@ -86,6 +86,7 @@ function source(state: 'PAID' | 'REFUNDED' = 'PAID'): ReceiptSource {
       scoreBps: outcome === 'PASS' ? 10_000 : 0,
       minimumScoreBps: 10_000,
       verifierVersion: 'agentclear-deterministic-v1',
+      ai: null,
       reportHash,
       reportStorageRootHash: reportRoot,
       reportStorageTransactionHash: `0x${'9'.repeat(64)}`,

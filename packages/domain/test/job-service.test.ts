@@ -82,6 +82,15 @@ const validInput = {
     mode: 'ai',
     minimumScore: 0.9,
     requirements: ['All hidden tests must pass'],
+    rubric: {
+      criteria: [
+        {
+          id: 'correctness',
+          description: 'The deliverable satisfies the requested behavior.',
+          weightBps: 10_000,
+        },
+      ],
+    },
   },
   refundPolicy: { onExpiry: true, onFinalFailure: true },
 } as const;

@@ -1,4 +1,5 @@
 import { loadRuntimeConfig } from '@agentclear/config';
+import { createZeroGComputeVerifier } from '@agentclear/compute';
 import {
   createPrivateKeyEscrowGateway,
   createPrivateKeyOutcomeRegistryGateway,
@@ -122,6 +123,18 @@ const storage =
         signerPrivateKey: config.storage.signerPrivateKey,
         maxPayloadBytes: config.storage.maxPayloadBytes,
       });
+const computeVerifier =
+  config.compute === undefined
+    ? undefined
+    : await createZeroGComputeVerifier({
+        rpcUrl: config.compute.rpcUrl,
+        signerPrivateKey: config.compute.signerPrivateKey,
+        providerAddress: config.compute.providerAddress,
+        ...(config.compute.model === undefined ? {} : { model: config.compute.model }),
+        timeoutMs: config.compute.timeoutMs,
+        maxResponseBytes: config.compute.maxResponseBytes,
+        requireTee: config.compute.requireTee,
+      });
 const submissionRepository = new PostgresSubmissionRepository(database.db);
 const verificationRepository = new PostgresVerificationRepository(database.db);
 const settlementRepository = new PostgresSettlementRepository(database.db);
@@ -145,6 +158,8 @@ const verificationService =
         verificationRepository,
         storage,
         maxReportBytes: config.storage.maxPayloadBytes,
+        ...(computeVerifier === undefined ? {} : { aiVerifier: computeVerifier }),
+        requireVerifiedAiResponse: config.compute?.requireTee ?? true,
         executor: chainWriteExecutor,
       });
 const settlementService =
@@ -225,6 +240,9 @@ const app = await buildApp({
         }),
       }),
   ...(storage === undefined ? {} : { storageHealth: async () => storage.health() }),
+  ...(computeVerifier === undefined
+    ? {}
+    : { computeHealth: async () => computeVerifier.health() }),
   logger: {
     level: config.api.logLevel,
     redact: {
