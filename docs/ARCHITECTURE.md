@@ -41,6 +41,12 @@ PostgresJobRepository
 - API errors never expose stack traces.
 - Bootstrap secrets are server-only, redacted from logs, and rejected when obvious placeholders are used in production.
 
+## Chain transaction boundary
+
+`packages/chain` implements the first real adapter for `JobEscrow`. Funding uses a local viem signer to simulate and fully sign the contract transaction before broadcast. The signed payload and its deterministic transaction hash can therefore be persisted by the application before any RPC submission. Replaying the same payload rebroadcasts the same transaction instead of creating a second escrow.
+
+After receipt confirmation, the adapter reads the escrow mapping and checks the buyer, amount, agreement hash, and state. A receipt alone is not treated as proof that the expected state was written. The adapter has been exercised against an ephemeral Anvil EVM; this is local integration evidence, not a 0G testnet deployment claim.
+
 ## Minimal infrastructure choice
 
 PostgreSQL is currently the only stateful dependency. Redis was intentionally omitted. Verification dispatch, chain reconciliation, and webhook delivery will first use a PostgreSQL outbox/lease design with idempotent workers. Another queue system should be added only when measured throughput or isolation requirements justify it.
@@ -56,4 +62,3 @@ agreement -> 0G Chain escrow -> submission -> sandbox verification
 ```
 
 None of those planned boundaries currently report simulated success. Each adapter must expose degraded health until it has valid configuration, and integration tests must distinguish local contract tests from live 0G testnet proof.
-

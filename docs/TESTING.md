@@ -22,6 +22,8 @@ docker compose up -d postgres
 pnpm test:integration
 ```
 
-The command applies checked migrations and runs integration packages sequentially against the one local database. Tests verify atomic job/event/requirement/idempotency persistence and the authenticated HTTP create/replay/read path.
+The command applies checked migrations and runs integration packages sequentially. PostgreSQL tests verify atomic job/event/requirement/idempotency persistence and the authenticated HTTP create/replay/read path. The chain integration test starts an ephemeral Anvil node, deploys the compiled `JobEscrow`, funds a newly generated local signer, prepares and rebroadcasts one signed funding transaction, verifies its receipt and value, reads the resulting escrow state, and assigns a provider through a second real transaction.
+
+Foundry 1.7.1 must be available on `PATH` for the Anvil integration test. No test private key is committed; the signer is generated in memory for each run.
 
 Integration tests are not evidence of 0G testnet behavior. Separate opt-in suites will be added for real chain, Storage, Compute, and ERC-8004 calls once those adapters and test credentials exist.

@@ -2,7 +2,7 @@
 
 AgentClear is an outcome-verification and settlement layer for AI-agent commerce on 0G. It binds a structured task agreement to escrow, evidence-backed verification, settlement or refund, and transaction-backed agent reputation.
 
-The repository is under active development. Authenticated structured job creation, immutable agreement commitments, PostgreSQL persistence, and the native-asset `JobEscrow` contract are implemented and tested. The escrow contract has real funding, one-time provider assignment, dispute holds, settlement, failure/expiry refunds, cancellation before assignment, and pull-based withdrawals. API-to-chain funding, a 0G testnet deployment, Storage, Compute, ERC-8004 writes, MCP, and the operator UI remain in progress and are not simulated.
+The repository is under active development. Authenticated structured job creation, immutable agreement commitments, PostgreSQL persistence, the native-asset `JobEscrow` contract, and its viem chain adapter are implemented and tested. The adapter persists-compatible signed transaction payloads, broadcasts them idempotently, waits for receipts, and attests the resulting contract state. API-to-chain orchestration, a 0G testnet deployment, Storage, Compute, ERC-8004 writes, MCP, and the operator UI remain in progress and are not simulated.
 
 ```mermaid
 flowchart LR
@@ -59,6 +59,7 @@ forge test --root packages/contracts -vvv
 
 - `apps/api` -- Fastify transport and authentication boundary
 - `packages/contracts` -- native-asset job escrow and Foundry security tests
+- `packages/chain` -- viem transaction preparation, broadcast, confirmation, and state attestation
 - `packages/domain` -- canonical agreement, state machine, commitments, money conversion, and application service
 - `packages/db` -- Drizzle schema, migrations, and PostgreSQL repository adapter
 - `packages/config` -- strict environment validation
