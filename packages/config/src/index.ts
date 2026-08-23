@@ -24,6 +24,8 @@ const runtimeConfigSchema = z
     CHAIN_EXPLORER_URL: optionalEnvironmentValue(z.url()),
     JOB_ESCROW_ADDRESS: optionalEnvironmentValue(z.string().regex(/^0x[0-9a-fA-F]{40}$/)),
     OUTCOME_REGISTRY_ADDRESS: optionalEnvironmentValue(z.string().regex(/^0x[0-9a-fA-F]{40}$/)),
+    ERC8004_IDENTITY_REGISTRY_ADDRESS: optionalEnvironmentValue(z.string().regex(/^0x[0-9a-fA-F]{40}$/)),
+    ERC8004_REPUTATION_REGISTRY_ADDRESS: optionalEnvironmentValue(z.string().regex(/^0x[0-9a-fA-F]{40}$/)),
     CHAIN_SIGNER_PRIVATE_KEY: optionalEnvironmentValue(z.string().regex(/^0x[0-9a-fA-F]{64}$/)),
     CHAIN_CONFIRMATIONS: optionalEnvironmentValue(z.coerce.number().int().min(1).max(100)),
     CHAIN_MAX_PER_JOB_BASE_UNITS: optionalEnvironmentValue(z.string().regex(/^[1-9]\d*$/)),
@@ -89,6 +91,26 @@ const runtimeConfigSchema = z
         code: 'custom',
         path: ['OUTCOME_REGISTRY_ADDRESS'],
         message: 'Outcome settlement requires the complete chain signer configuration.',
+      });
+    }
+    if (
+      (value.ERC8004_IDENTITY_REGISTRY_ADDRESS === undefined)
+      !== (value.ERC8004_REPUTATION_REGISTRY_ADDRESS === undefined)
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['ERC8004_REPUTATION_REGISTRY_ADDRESS'],
+        message: 'ERC-8004 identity and reputation registry addresses must be configured together.',
+      });
+    }
+    if (
+      value.ERC8004_IDENTITY_REGISTRY_ADDRESS !== undefined
+      && configuredChainFields.length !== requiredChainFields.length
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['ERC8004_IDENTITY_REGISTRY_ADDRESS'],
+        message: 'ERC-8004 reputation requires the complete chain signer configuration.',
       });
     }
 
@@ -172,6 +194,10 @@ export type RuntimeConfig = {
     confirmations: number;
     maxPerJobBaseUnits: string;
     outcomeRegistryAddress?: `0x${string}`;
+    erc8004?: {
+      identityRegistryAddress: `0x${string}`;
+      reputationRegistryAddress: `0x${string}`;
+    };
   };
   storage?: {
     rpcUrl: string;
@@ -200,6 +226,8 @@ export function loadRuntimeConfig(environment: NodeJS.ProcessEnv = process.env):
     CHAIN_EXPLORER_URL: environment['CHAIN_EXPLORER_URL'],
     JOB_ESCROW_ADDRESS: environment['JOB_ESCROW_ADDRESS'],
     OUTCOME_REGISTRY_ADDRESS: environment['OUTCOME_REGISTRY_ADDRESS'],
+    ERC8004_IDENTITY_REGISTRY_ADDRESS: environment['ERC8004_IDENTITY_REGISTRY_ADDRESS'],
+    ERC8004_REPUTATION_REGISTRY_ADDRESS: environment['ERC8004_REPUTATION_REGISTRY_ADDRESS'],
     CHAIN_SIGNER_PRIVATE_KEY: environment['CHAIN_SIGNER_PRIVATE_KEY'],
     CHAIN_CONFIRMATIONS: environment['CHAIN_CONFIRMATIONS'],
     CHAIN_MAX_PER_JOB_BASE_UNITS: environment['CHAIN_MAX_PER_JOB_BASE_UNITS'],
@@ -225,6 +253,14 @@ export function loadRuntimeConfig(environment: NodeJS.ProcessEnv = process.env):
           ...(parsed.OUTCOME_REGISTRY_ADDRESS === undefined
             ? {}
             : { outcomeRegistryAddress: parsed.OUTCOME_REGISTRY_ADDRESS as `0x${string}` }),
+          ...(parsed.ERC8004_IDENTITY_REGISTRY_ADDRESS === undefined
+            ? {}
+            : {
+                erc8004: {
+                  identityRegistryAddress: parsed.ERC8004_IDENTITY_REGISTRY_ADDRESS as `0x${string}`,
+                  reputationRegistryAddress: parsed.ERC8004_REPUTATION_REGISTRY_ADDRESS as `0x${string}`,
+                },
+              }),
         };
   const providerBootstrap =
     parsed.PROVIDER_BOOTSTRAP_API_KEY === undefined

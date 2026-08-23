@@ -24,6 +24,7 @@ import {
   jobs,
   jobStateEvents,
   refunds,
+  reputationOperations,
   settlementOperations,
   settlements,
   submissionOperations,
@@ -199,11 +200,16 @@ export class PostgresSettlementRepository implements SettlementRepository {
         .from(settlementOperations)
         .where(ne(settlementOperations.status, 'CONFIRMED'))
         .limit(1);
+      const [activeReputation] = await transaction.select({ id: reputationOperations.id })
+        .from(reputationOperations)
+        .where(ne(reputationOperations.status, 'CONFIRMED'))
+        .limit(1);
       if (
         activeFunding !== undefined
         || activeAssignment !== undefined
         || activeSubmission !== undefined
         || activeVerification !== undefined
+        || activeReputation !== undefined
       ) throw new ChainSignerBusyError();
       if (activeSettlement !== undefined) {
         if (activeSettlement.jobId === job.id) throw new SettlementInProgressError(job.id);

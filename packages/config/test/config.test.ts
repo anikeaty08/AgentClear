@@ -65,6 +65,41 @@ describe('loadRuntimeConfig', () => {
     })).toThrow('Outcome settlement requires the complete chain signer configuration.');
   });
 
+  it('maps ERC-8004 registries only when both addresses and the signer are configured', () => {
+    const config = loadRuntimeConfig({
+      ...validEnvironment,
+      CHAIN_RPC_URL: 'http://127.0.0.1:8545',
+      CHAIN_ID: '31337',
+      CHAIN_NAME: 'AgentClear Anvil',
+      CHAIN_NATIVE_CURRENCY_SYMBOL: 'A0GI',
+      JOB_ESCROW_ADDRESS: `0x${'1'.repeat(40)}`,
+      CHAIN_SIGNER_PRIVATE_KEY: `0x${'2'.repeat(64)}`,
+      CHAIN_MAX_PER_JOB_BASE_UNITS: '5000000000000000000',
+      ERC8004_IDENTITY_REGISTRY_ADDRESS: `0x${'3'.repeat(40)}`,
+      ERC8004_REPUTATION_REGISTRY_ADDRESS: `0x${'4'.repeat(40)}`,
+    });
+
+    expect(config.chain?.erc8004).toEqual({
+      identityRegistryAddress: `0x${'3'.repeat(40)}`,
+      reputationRegistryAddress: `0x${'4'.repeat(40)}`,
+    });
+  });
+
+  it('rejects partial ERC-8004 registry configuration', () => {
+    expect(() => loadRuntimeConfig({
+      ...validEnvironment,
+      ERC8004_IDENTITY_REGISTRY_ADDRESS: `0x${'3'.repeat(40)}`,
+    })).toThrow('ERC-8004 identity and reputation registry addresses must be configured together.');
+  });
+
+  it('rejects ERC-8004 registries without the complete signer configuration', () => {
+    expect(() => loadRuntimeConfig({
+      ...validEnvironment,
+      ERC8004_IDENTITY_REGISTRY_ADDRESS: `0x${'3'.repeat(40)}`,
+      ERC8004_REPUTATION_REGISTRY_ADDRESS: `0x${'4'.repeat(40)}`,
+    })).toThrow('ERC-8004 reputation requires the complete chain signer configuration.');
+  });
+
   it('rejects local chain endpoints in production', () => {
     expect(() =>
       loadRuntimeConfig({

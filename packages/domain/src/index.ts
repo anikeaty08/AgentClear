@@ -11,3 +11,4 @@ export * from './money.js';
 export * from './submission.js';
 export * from './verification.js';
 export * from './settlement.js';
+export * from './reputation.js';

@@ -73,6 +73,12 @@ export const settlementOperationStatusEnum = pgEnum('settlement_operation_status
   'ESCROW_BROADCAST',
   'CONFIRMED',
 ]);
+export const reputationOperationStatusEnum = pgEnum('reputation_operation_status', [
+  'CREATED',
+  'PREPARED',
+  'BROADCAST',
+  'CONFIRMED',
+]);
 
 export const jobs = pgTable(
   'jobs',
@@ -512,6 +518,71 @@ export const refunds = pgTable('refunds', {
   finalizedAt: timestamp('finalized_at', { withTimezone: true, mode: 'date' }).notNull(),
 });
 
+export const reputationOperations = pgTable(
+  'reputation_operations',
+  {
+    id: uuid('id').primaryKey(),
+    jobId: uuid('job_id')
+      .notNull()
+      .references(() => jobs.id, { onDelete: 'restrict' }),
+    verificationRunId: uuid('verification_run_id')
+      .notNull()
+      .references(() => verificationRuns.id, { onDelete: 'restrict' }),
+    providerAgentId: text('provider_agent_id').notNull(),
+    outcome: verificationOutcomeEnum('outcome').$type<VerificationOutcome>().notNull(),
+    value: numeric('value', { precision: 39, scale: 0 }).notNull(),
+    valueDecimals: smallint('value_decimals').notNull(),
+    tag1: varchar('tag1', { length: 100 }).notNull(),
+    tag2: varchar('tag2', { length: 100 }).notNull(),
+    feedbackUri: text('feedback_uri').notNull(),
+    feedbackHash: varchar('feedback_hash', { length: 66 }).notNull(),
+    status: reputationOperationStatusEnum('status').notNull(),
+    agentTokenId: numeric('agent_token_id', { precision: 78, scale: 0 }),
+    contractAddress: varchar('contract_address', { length: 42 }),
+    identityRegistryAddress: varchar('identity_registry_address', { length: 42 }),
+    signerAddress: varchar('signer_address', { length: 42 }),
+    serializedTransaction: text('serialized_transaction'),
+    transactionHash: varchar('transaction_hash', { length: 66 }),
+    blockNumber: numeric('block_number', { precision: 78, scale: 0 }),
+    feedbackIndex: numeric('feedback_index', { precision: 20, scale: 0 }),
+    idempotencyScope: varchar('idempotency_scope', { length: 255 }).notNull(),
+    idempotencyKey: varchar('idempotency_key', { length: 255 }).notNull(),
+    requestHash: varchar('request_hash', { length: 66 }).notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull(),
+  },
+  (table) => [
+    unique('reputation_operations_job_unique').on(table.jobId),
+    unique('reputation_operations_idempotency_unique').on(
+      table.idempotencyScope,
+      table.idempotencyKey,
+    ),
+    unique('reputation_operations_transaction_unique').on(table.transactionHash),
+    index('reputation_operations_status_updated_at_idx').on(table.status, table.updatedAt),
+  ],
+);
+
+export const reputationEvents = pgTable('reputation_events', {
+  jobId: uuid('job_id')
+    .primaryKey()
+    .references(() => jobs.id, { onDelete: 'restrict' }),
+  providerAgentId: text('provider_agent_id').notNull(),
+  registryAddress: varchar('registry_address', { length: 42 }).notNull(),
+  identityRegistryAddress: varchar('identity_registry_address', { length: 42 }).notNull(),
+  agentTokenId: numeric('agent_token_id', { precision: 78, scale: 0 }).notNull(),
+  clientAddress: varchar('client_address', { length: 42 }).notNull(),
+  value: numeric('value', { precision: 39, scale: 0 }).notNull(),
+  valueDecimals: smallint('value_decimals').notNull(),
+  tag1: varchar('tag1', { length: 100 }).notNull(),
+  tag2: varchar('tag2', { length: 100 }).notNull(),
+  feedbackUri: text('feedback_uri').notNull(),
+  feedbackHash: varchar('feedback_hash', { length: 66 }).notNull(),
+  transactionHash: varchar('transaction_hash', { length: 66 }).notNull().unique(),
+  blockNumber: numeric('block_number', { precision: 78, scale: 0 }).notNull(),
+  feedbackIndex: numeric('feedback_index', { precision: 20, scale: 0 }).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull(),
+});
+
 export const databaseSchema = {
   jobs,
   jobRequirements,
@@ -531,4 +602,6 @@ export const databaseSchema = {
   settlementOperations,
   settlements,
   refunds,
+  reputationOperations,
+  reputationEvents,
 };

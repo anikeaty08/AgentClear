@@ -2,6 +2,7 @@ import { loadRuntimeConfig } from '@agentclear/config';
 import {
   createPrivateKeyEscrowGateway,
   createPrivateKeyOutcomeRegistryGateway,
+  createPrivateKeyErc8004ReputationGateway,
   defineAgentClearChain,
 } from '@agentclear/chain';
 import {
@@ -13,6 +14,7 @@ import {
   PostgresSubmissionRepository,
   PostgresVerificationRepository,
   PostgresSettlementRepository,
+  PostgresReputationRepository,
 } from '@agentclear/db';
 import {
   AssignmentService,
@@ -23,6 +25,7 @@ import {
   VerificationQueryService,
   VerificationService,
   SettlementService,
+  ReputationService,
 } from '@agentclear/domain';
 import { ZeroGStorageClient } from '@agentclear/storage';
 
@@ -70,6 +73,25 @@ const outcomeGateway =
         privateKey: config.chain.signerPrivateKey,
         confirmations: config.chain.confirmations,
       });
+const reputationGateway =
+  config.chain?.erc8004 === undefined
+    ? undefined
+    : createPrivateKeyErc8004ReputationGateway({
+        rpcUrl: config.chain.rpcUrl,
+        chain: defineAgentClearChain({
+          chainId: config.chain.chainId,
+          name: config.chain.name,
+          nativeCurrencySymbol: config.chain.nativeCurrencySymbol,
+          rpcUrl: config.chain.rpcUrl,
+          ...(config.chain.explorerUrl === undefined
+            ? {}
+            : { explorerUrl: config.chain.explorerUrl }),
+        }),
+        identityRegistryAddress: config.chain.erc8004.identityRegistryAddress,
+        reputationRegistryAddress: config.chain.erc8004.reputationRegistryAddress,
+        privateKey: config.chain.signerPrivateKey,
+        confirmations: config.chain.confirmations,
+      });
 const fundingService =
   config.chain === undefined || chain === undefined
     ? undefined
@@ -101,6 +123,7 @@ const storage =
 const submissionRepository = new PostgresSubmissionRepository(database.db);
 const verificationRepository = new PostgresVerificationRepository(database.db);
 const settlementRepository = new PostgresSettlementRepository(database.db);
+const reputationRepository = new PostgresReputationRepository(database.db);
 const submissionService =
   config.storage === undefined || storage === undefined
     ? undefined
@@ -134,6 +157,16 @@ const settlementService =
         escrowGateway: chain,
         executor: chainWriteExecutor,
       });
+const reputationService =
+  reputationGateway === undefined
+    ? undefined
+    : new ReputationService({
+        jobRepository,
+        verificationRepository,
+        reputationRepository,
+        gateway: reputationGateway,
+        executor: chainWriteExecutor,
+      });
 const authenticators = [
   new BootstrapApiKeyAuthenticator(
     config.auth.bootstrapApiKey,
@@ -165,6 +198,7 @@ const app = await buildApp({
   ...(submissionService === undefined ? {} : { submissionService }),
   ...(verificationService === undefined ? {} : { verificationService }),
   ...(settlementService === undefined ? {} : { settlementService }),
+  ...(reputationService === undefined ? {} : { reputationService }),
   ...(chain === undefined
     ? {}
     : {
@@ -173,6 +207,9 @@ const app = await buildApp({
           ...(outcomeGateway === undefined
             ? {}
             : { outcomeRegistry: await outcomeGateway.health() }),
+          ...(reputationGateway === undefined
+            ? {}
+            : { erc8004: await reputationGateway.health() }),
         }),
       }),
   ...(storage === undefined ? {} : { storageHealth: async () => storage.health() }),

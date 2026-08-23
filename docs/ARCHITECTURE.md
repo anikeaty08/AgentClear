@@ -57,9 +57,9 @@ CREATED -> PREPARED -> BROADCAST -> CONFIRMED
 
 The job stays `QUOTED` until funding receipt and state attestation both succeed. Assignment first records `FUNDED -> OPEN`; it records `OPEN -> ASSIGNED` only after the provider stored in the escrow matches the request. Each confirmation updates the operation, escrow record, job state, and immutable state event in one database transaction. Serialized signed transactions are cleared after confirmation and are never returned by REST. A per-job base-unit spending ceiling and separate `jobs:fund` and `jobs:assign` scopes are enforced before signing.
 
-Funding, assignment, 0G Storage submission, verification publication, outcome anchoring, and settlement reuse one configured signer. A PostgreSQL session advisory lock spans each complete external operation, including preparation, persistence, broadcast/upload, confirmation, and database finalization, so independent API instances cannot concurrently consume its nonce. Repository transactions take a separate state lock, and any unfinished signed or storage operation blocks unrelated writes until it is resumed with its original idempotency key. This protects local, restart, and multi-instance recovery. Automated stale-operation reconciliation and hardened external signer custody remain release blockers.
+Funding, assignment, 0G Storage submission, verification publication, outcome anchoring, settlement, and ERC-8004 feedback reuse one configured signer. A PostgreSQL session advisory lock spans each complete external operation, including preparation, persistence, broadcast/upload, confirmation, and database finalization, so independent API instances cannot concurrently consume its nonce. Repository transactions take a separate state lock, and any unfinished signed or storage operation blocks unrelated writes until it is resumed with its original idempotency key. This protects local, restart, and multi-instance recovery. Automated stale-operation reconciliation and hardened external signer custody remain release blockers.
 
-Provider agent identifiers are currently syntax-checked and agreement-constrained. Live ERC-8004 registry resolution is not implemented, so assignment proves the payment address was written to escrow but not yet that the supplied identity token exists.
+Provider agent identifiers are syntax-checked and agreement-constrained during assignment. ERC-8004 feedback resolves the token through `IdentityRegistry.ownerOf` and rejects self-feedback, but assignment itself does not yet prove token ownership or bind the identity token to the provider payment address.
 
 ## Provider submission and evidence boundary
 
@@ -103,6 +103,20 @@ CREATED -> OUTCOME_PREPARED -> OUTCOME_BROADCAST -> OUTCOME_CONFIRMED
 
 The database records the outcome and escrow transaction hashes/blocks, final amount, immutable state events, and a single payment or refund row. Serialized transactions are cleared after each confirmation. PostgreSQL and contract guards reject a second finalization; an exact idempotency retry returns the original result. `/ready` checks both configured contract deployments. The complete PASS/pay and FAIL/refund paths are exercised through REST against deployed Anvil contracts; this is local EVM evidence, not a 0G testnet claim.
 
+## ERC-8004 reputation boundary
+
+`ReputationService` derives feedback only from an evidence-backed terminal pairing: `PAID` with `PASS`, or `REFUNDED` with `FAIL`. It does not accept caller-provided scores. The chain adapter uses the current eight-argument `giveFeedback` interface, verifies registry bytecode and IdentityRegistry linkage, checks agent ownership and the self-feedback rule, persists the signed transaction before broadcast, parses `NewFeedback`, and reads the feedback back from the registry before confirmation.
+
+```text
+PAID + PASS       -> value 100, decimals 0
+REFUNDED + FAIL   -> value   0, decimals 0
+
+CREATED -> PREPARED -> BROADCAST -> CONFIRMED
+             `-- exact signed transaction recovery --'
+```
+
+One database operation and one confirmed reputation event are permitted per AgentClear job. The report's content-addressed Storage root is the evidence URI; the bytes32 hash is zero as allowed for content-addressed URIs. The app does not hardcode registry deployments. Local tests deploy a controlled exact-interface fixture, while live 0G addresses must come from environment configuration. See `docs/ERC8004.md`.
+
 ## Minimal infrastructure choice
 
 PostgreSQL is currently the only stateful dependency. Redis was intentionally omitted. Verification dispatch, chain reconciliation, and webhook delivery will first use a PostgreSQL outbox/lease design with idempotent workers. Another queue system should be added only when measured throughput or isolation requirements justify it.
@@ -114,7 +128,7 @@ The next boundaries will preserve the same domain-service pattern:
 ```text
 agreement -> 0G Chain escrow -> 0G Storage submission evidence
           -> sandbox verification -> 0G Compute rubric signal
-          -> outcome anchor -> settle/refund -> ERC-8004 adapter -> receipt
+          -> outcome anchor -> settle/refund -> ERC-8004 feedback -> receipt
 ```
 
-Outcome anchoring and settlement/refund are now implemented locally. The sandbox, Compute, ERC-8004, and receipt boundaries remain planned and do not report simulated success. Each adapter must expose degraded health until it has valid configuration, and integration tests must distinguish local contract tests from live 0G testnet proof.
+Outcome anchoring, settlement/refund, and ERC-8004 feedback are now implemented locally. The sandbox, Compute, and receipt boundaries remain planned and do not report simulated success. Each adapter exposes degraded health until it has valid configuration, and integration tests distinguish local contract tests from live 0G testnet proof.

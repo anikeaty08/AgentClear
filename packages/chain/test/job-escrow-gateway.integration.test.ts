@@ -14,6 +14,7 @@ import {
   keccak256,
   parseEther,
   stringToBytes,
+  zeroHash,
   type Abi,
   type Address,
   type Hex,
@@ -24,6 +25,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   agentIdentityToHash,
   ESCROW_STATE,
+  ViemErc8004ReputationGateway,
   ViemJobEscrowGateway,
   ViemOutcomeRegistryGateway,
 } from '../src/index.js';
@@ -40,6 +42,14 @@ const artifactUrl = new URL(
 );
 const outcomeArtifactUrl = new URL(
   '../../contracts/out/OutcomeRegistry.sol/OutcomeRegistry.json',
+  import.meta.url,
+);
+const identityArtifactUrl = new URL(
+  '../../contracts/out/TestErc8004Registries.sol/TestErc8004IdentityRegistry.json',
+  import.meta.url,
+);
+const reputationArtifactUrl = new URL(
+  '../../contracts/out/TestErc8004Registries.sol/TestErc8004ReputationRegistry.json',
   import.meta.url,
 );
 
@@ -279,5 +289,93 @@ describe('ViemJobEscrowGateway against Anvil', () => {
     await gateway.broadcastPreparedTransaction(preparedSettlement);
     const settlement = await gateway.confirmSettle(settlementCommand, preparedSettlement);
     expect(settlement.escrow.state).toBe(ESCROW_STATE.RELEASED);
+
+    const identityArtifact = await readArtifact(identityArtifactUrl);
+    const identityDeploymentHash = await walletClient.deployContract({
+      account: buyer,
+      abi: identityArtifact.abi,
+      bytecode: identityArtifact.bytecode.object,
+    });
+    const identityDeployment = await publicClient.waitForTransactionReceipt({
+      hash: identityDeploymentHash,
+    });
+    const identityAddress = identityDeployment.contractAddress;
+    if (identityDeployment.status !== 'success' || identityAddress === null || identityAddress === undefined) {
+      throw new Error('Test ERC-8004 IdentityRegistry deployment failed.');
+    }
+    const registerHash = await walletClient.writeContract({
+      account: buyer,
+      address: identityAddress,
+      abi: identityArtifact.abi,
+      functionName: 'setOwner',
+      args: [456n, provider],
+    });
+    await publicClient.waitForTransactionReceipt({ hash: registerHash });
+    const reputationArtifact = await readArtifact(reputationArtifactUrl);
+    const reputationDeploymentHash = await walletClient.deployContract({
+      account: buyer,
+      abi: reputationArtifact.abi,
+      bytecode: reputationArtifact.bytecode.object,
+      args: [identityAddress],
+    });
+    const reputationDeployment = await publicClient.waitForTransactionReceipt({
+      hash: reputationDeploymentHash,
+    });
+    const reputationAddress = reputationDeployment.contractAddress;
+    if (
+      reputationDeployment.status !== 'success'
+      || reputationAddress === null
+      || reputationAddress === undefined
+    ) throw new Error('Test ERC-8004 ReputationRegistry deployment failed.');
+    const reputationGateway = new ViemErc8004ReputationGateway({
+      rpcUrl,
+      chain,
+      identityRegistryAddress: identityAddress,
+      reputationRegistryAddress: reputationAddress,
+      account: localSigner,
+    });
+    await expect(reputationGateway.health()).resolves.toEqual({
+      chainId,
+      identityRegistryLinked: true,
+      contractsDeployed: true,
+    });
+    const selfOwnedIdentityHash = await walletClient.writeContract({
+      account: buyer,
+      address: identityAddress,
+      abi: identityArtifact.abi,
+      functionName: 'setOwner',
+      args: [999n, localSigner.address],
+    });
+    await publicClient.waitForTransactionReceipt({ hash: selfOwnedIdentityHash });
+    await expect(reputationGateway.prepareFeedback({
+      providerAgentId: `erc8004:${chainId}:999`,
+      value: 100n,
+      valueDecimals: 0,
+      tag1: 'agentclear.outcome',
+      tag2: 'code',
+      endpoint: '',
+      feedbackUri: `0g://${outcomeCommand.verificationReportHash}`,
+      feedbackHash: zeroHash,
+    })).rejects.toThrow('feedback signer cannot own the provider identity');
+    const feedbackCommand = {
+      providerAgentId: `erc8004:${chainId}:456`,
+      value: 100n,
+      valueDecimals: 0,
+      tag1: 'agentclear.outcome',
+      tag2: 'code',
+      endpoint: '',
+      feedbackUri: `0g://${outcomeCommand.verificationReportHash}`,
+      feedbackHash: zeroHash,
+    } as const;
+    const preparedFeedback = await reputationGateway.prepareFeedback(feedbackCommand);
+    await expect(reputationGateway.broadcastPreparedFeedback(preparedFeedback)).resolves.toBe(
+      preparedFeedback.transactionHash,
+    );
+    await expect(reputationGateway.broadcastPreparedFeedback(preparedFeedback)).resolves.toBe(
+      preparedFeedback.transactionHash,
+    );
+    await expect(
+      reputationGateway.confirmFeedback(feedbackCommand, preparedFeedback),
+    ).resolves.toMatchObject({ feedbackIndex: '1', clientAddress: localSigner.address });
   });
 });

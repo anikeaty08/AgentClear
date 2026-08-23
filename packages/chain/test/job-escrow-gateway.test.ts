@@ -6,6 +6,7 @@ import {
   agentIdentityToHash,
   deadlineToUnixSeconds,
   jobIdToEscrowKey,
+  parseAgentIdentity,
 } from '../src/index.js';
 
 describe('job escrow chain normalization', () => {
@@ -28,5 +29,13 @@ describe('job escrow chain normalization', () => {
       keccak256(stringToBytes('erc8004:16602:123')),
     );
     expect(() => agentIdentityToHash('agent-123')).toThrow(ChainConfigurationError);
+  });
+
+  it('parses an ERC-8004 token ID without number loss', () => {
+    expect(parseAgentIdentity('erc8004:16602:340282366920938463463374607431768211455')).toEqual({
+      chainId: 16_602,
+      tokenId: 340282366920938463463374607431768211455n,
+    });
+    expect(() => parseAgentIdentity('erc8004:unsafe')).toThrow('erc8004:<chainId>:<tokenId>');
   });
 });

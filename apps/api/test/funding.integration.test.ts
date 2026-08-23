@@ -4,12 +4,17 @@ import { readFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { setTimeout as delay } from 'node:timers/promises';
 
-import { ViemJobEscrowGateway, ViemOutcomeRegistryGateway } from '@agentclear/chain';
+import {
+  ViemErc8004ReputationGateway,
+  ViemJobEscrowGateway,
+  ViemOutcomeRegistryGateway,
+} from '@agentclear/chain';
 import {
   createDatabaseClient,
   PostgresAssignmentRepository,
   PostgresEscrowRepository,
   PostgresJobRepository,
+  PostgresReputationRepository,
   PostgresSubmissionRepository,
   PostgresVerificationRepository,
   PostgresSettlementRepository,
@@ -19,6 +24,7 @@ import {
   FundingService,
   InMemoryExclusiveExecutor,
   JobService,
+  ReputationService,
   SubmissionQueryService,
   SubmissionService,
   VerificationQueryService,
@@ -57,6 +63,14 @@ const artifactUrl = new URL(
 );
 const outcomeArtifactUrl = new URL(
   '../../../packages/contracts/out/OutcomeRegistry.sol/OutcomeRegistry.json',
+  import.meta.url,
+);
+const identityRegistryArtifactUrl = new URL(
+  '../../../packages/contracts/out/TestErc8004Registries.sol/TestErc8004IdentityRegistry.json',
+  import.meta.url,
+);
+const reputationRegistryArtifactUrl = new URL(
+  '../../../packages/contracts/out/TestErc8004Registries.sol/TestErc8004ReputationRegistry.json',
   import.meta.url,
 );
 
@@ -155,6 +169,7 @@ describe.skipIf(databaseUrl === undefined)('AgentClear funding API with PostgreS
   let publicClient: ReturnType<typeof createPublicClient>;
   let gateway: ViemJobEscrowGateway;
   let outcomeGateway: ViemOutcomeRegistryGateway;
+  let reputationGateway: ViemErc8004ReputationGateway;
   let providerAddress: Address;
   const evidenceStorage = new IntegrationEvidenceStorage();
 
@@ -233,6 +248,47 @@ describe.skipIf(databaseUrl === undefined)('AgentClear funding API with PostgreS
       || outcomeContractAddress === null
     ) throw new Error('OutcomeRegistry deployment failed.');
 
+    const identityArtifact = await readArtifact(identityRegistryArtifactUrl);
+    const identityDeploymentHash = await unlockedWallet.deployContract({
+      account: deployer,
+      abi: identityArtifact.abi,
+      bytecode: identityArtifact.bytecode.object,
+    });
+    const identityDeployment = await publicClient.waitForTransactionReceipt({
+      hash: identityDeploymentHash,
+    });
+    const identityRegistryAddress = identityDeployment.contractAddress;
+    if (
+      identityDeployment.status !== 'success'
+      || identityRegistryAddress === undefined
+      || identityRegistryAddress === null
+    ) throw new Error('Test ERC-8004 IdentityRegistry deployment failed.');
+    const setOwnerHash = await unlockedWallet.writeContract({
+      account: deployer,
+      address: identityRegistryAddress,
+      abi: identityArtifact.abi,
+      functionName: 'setOwner',
+      args: [456n, providerAddress],
+    });
+    await publicClient.waitForTransactionReceipt({ hash: setOwnerHash });
+
+    const reputationArtifact = await readArtifact(reputationRegistryArtifactUrl);
+    const reputationDeploymentHash = await unlockedWallet.deployContract({
+      account: deployer,
+      abi: reputationArtifact.abi,
+      bytecode: reputationArtifact.bytecode.object,
+      args: [identityRegistryAddress],
+    });
+    const reputationDeployment = await publicClient.waitForTransactionReceipt({
+      hash: reputationDeploymentHash,
+    });
+    const reputationRegistryAddress = reputationDeployment.contractAddress;
+    if (
+      reputationDeployment.status !== 'success'
+      || reputationRegistryAddress === undefined
+      || reputationRegistryAddress === null
+    ) throw new Error('Test ERC-8004 ReputationRegistry deployment failed.');
+
     const jobRepository = new PostgresJobRepository(database.db);
     const submissionRepository = new PostgresSubmissionRepository(database.db);
     const verificationRepository = new PostgresVerificationRepository(database.db);
@@ -242,6 +298,13 @@ describe.skipIf(databaseUrl === undefined)('AgentClear funding API with PostgreS
       rpcUrl,
       chain,
       contractAddress: outcomeContractAddress,
+      account: signer,
+    });
+    reputationGateway = new ViemErc8004ReputationGateway({
+      rpcUrl,
+      chain,
+      identityRegistryAddress,
+      reputationRegistryAddress,
       account: signer,
     });
     const chainWriteExecutor = new InMemoryExclusiveExecutor();
@@ -280,6 +343,13 @@ describe.skipIf(databaseUrl === undefined)('AgentClear funding API with PostgreS
         escrowGateway: gateway,
         executor: chainWriteExecutor,
       }),
+      reputationService: new ReputationService({
+        jobRepository,
+        verificationRepository,
+        reputationRepository: new PostgresReputationRepository(database.db),
+        gateway: reputationGateway,
+        executor: chainWriteExecutor,
+      }),
       fundingService: new FundingService({
         jobRepository,
         escrowRepository: new PostgresEscrowRepository(database.db),
@@ -293,7 +363,11 @@ describe.skipIf(databaseUrl === undefined)('AgentClear funding API with PostgreS
         gateway,
         executor: chainWriteExecutor,
       }),
-      chainHealth: async () => gateway.health(),
+      chainHealth: async () => ({
+        escrow: await gateway.health(),
+        outcomeRegistry: await outcomeGateway.health(),
+        erc8004: await reputationGateway.health(),
+      }),
       authenticator: new CompositeAuthenticator([
         new BootstrapApiKeyAuthenticator(
           apiKey,
@@ -303,7 +377,7 @@ describe.skipIf(databaseUrl === undefined)('AgentClear funding API with PostgreS
         new BootstrapApiKeyAuthenticator(
           providerApiKey,
           'funding-integration-pepper-at-least-32-chars',
-          'erc8004:16602:456',
+          'erc8004:31337:456',
           'agent',
           new Set(['jobs:read', 'jobs:submit']),
         ),
@@ -314,7 +388,7 @@ describe.skipIf(databaseUrl === undefined)('AgentClear funding API with PostgreS
   beforeEach(async () => {
     evidenceStorage.reset();
     await database.db.execute(
-      sql`truncate table settlements, refunds, settlement_operations, verification_reports, verification_checks, verification_runs, verification_operations, submission_artifacts, submissions, submission_operations, job_assignment_operations, job_assignments, escrow_funding_operations, escrows, idempotency_records, job_state_events, job_requirements, jobs`,
+      sql`truncate table reputation_events, reputation_operations, settlements, refunds, settlement_operations, verification_reports, verification_checks, verification_runs, verification_operations, submission_artifacts, submissions, submission_operations, job_assignment_operations, job_assignments, escrow_funding_operations, escrows, idempotency_records, job_state_events, job_requirements, jobs`,
     );
   });
 
@@ -331,7 +405,7 @@ describe.skipIf(databaseUrl === undefined)('AgentClear funding API with PostgreS
       url: '/v1/jobs',
       headers: { authorization, 'idempotency-key': randomUUID() },
       payload: {
-        buyerAgentId: 'erc8004:16602:123',
+        buyerAgentId: 'erc8004:31337:123',
         title: 'Implement transaction sorter',
         description: 'Implement the requested TypeScript function.',
         budget: { token: 'native', maxAmount: '0.5' },
@@ -412,7 +486,7 @@ describe.skipIf(databaseUrl === undefined)('AgentClear funding API with PostgreS
       url: `/v1/jobs/${jobId}/assign`,
       headers: { authorization, 'idempotency-key': assignmentKey },
       payload: {
-        providerAgentId: 'erc8004:16602:456',
+        providerAgentId: 'erc8004:31337:456',
         providerAddress,
       },
     });
@@ -421,7 +495,7 @@ describe.skipIf(databaseUrl === undefined)('AgentClear funding API with PostgreS
       url: `/v1/jobs/${jobId}/assign`,
       headers: { authorization, 'idempotency-key': assignmentKey },
       payload: {
-        providerAgentId: 'erc8004:16602:456',
+        providerAgentId: 'erc8004:31337:456',
         providerAddress,
       },
     });
@@ -429,11 +503,11 @@ describe.skipIf(databaseUrl === undefined)('AgentClear funding API with PostgreS
     expect(assigned.statusCode).toBe(200);
     expect(assigned.json().data.job).toMatchObject({
       state: 'ASSIGNED',
-      providerAgentId: 'erc8004:16602:456',
+      providerAgentId: 'erc8004:31337:456',
     });
     expect(assigned.json().data.assignment).toMatchObject({
       status: 'CONFIRMED',
-      providerAgentId: 'erc8004:16602:456',
+      providerAgentId: 'erc8004:31337:456',
       providerAddress,
       transactionHash: expect.stringMatching(/^0x[0-9a-f]{64}$/),
       blockNumber: expect.any(String),
@@ -494,7 +568,7 @@ describe.skipIf(databaseUrl === undefined)('AgentClear funding API with PostgreS
     expect(submitted.statusCode).toBe(201);
     expect(submitted.json().data.job.state).toBe('SUBMITTED');
     expect(submitted.json().data.submission).toMatchObject({
-      providerAgentId: 'erc8004:16602:456',
+      providerAgentId: 'erc8004:31337:456',
       storageRootHash: expect.stringMatching(/^0x[0-9a-f]{64}$/),
       storageTransactionHash: `0x${'e'.repeat(64)}`,
       storageTransactionSequence: 11,
@@ -546,6 +620,12 @@ describe.skipIf(databaseUrl === undefined)('AgentClear funding API with PostgreS
       headers: { authorization, 'idempotency-key': settlementKey },
       payload: {},
     });
+    const reputationReplay = await app.inject({
+      method: 'POST',
+      url: `/v1/jobs/${jobId}/reputation`,
+      headers: { authorization, 'idempotency-key': settlementKey },
+      payload: {},
+    });
     expect(settled.statusCode).toBe(200);
     expect(settlementReplay.statusCode, settlementReplay.body).toBe(200);
     expect(settled.json().data.job.state).toBe('PAID');
@@ -555,8 +635,24 @@ describe.skipIf(databaseUrl === undefined)('AgentClear funding API with PostgreS
       outcomeTransactionHash: expect.stringMatching(/^0x[0-9a-f]{64}$/),
       escrowTransactionHash: expect.stringMatching(/^0x[0-9a-f]{64}$/),
     });
+    expect(settled.json().data.reputation).toMatchObject({
+      providerAgentId: 'erc8004:31337:456',
+      agentTokenId: '456',
+      value: '100',
+      valueDecimals: 0,
+      tag1: 'agentclear.outcome',
+      tag2: 'code',
+      transactionHash: expect.stringMatching(/^0x[0-9a-f]{64}$/),
+      blockNumber: expect.any(String),
+      feedbackIndex: expect.stringMatching(/^\d+$/),
+    });
     expect(settled.body).not.toContain('serializedTransaction');
     expect(settlementReplay.headers['idempotency-replayed']).toBe('true');
+    expect(reputationReplay.statusCode, reputationReplay.body).toBe(200);
+    expect(reputationReplay.headers['idempotency-replayed']).toBe('true');
+    expect(reputationReplay.json().data.reputation.transactionHash).toBe(
+      settled.json().data.reputation.transactionHash,
+    );
     expect((await gateway.getEscrow(jobId)).state).toBe(3);
     expect(await outcomeGateway.getOutcome(jobId)).toMatchObject({ outcome: 'PASS' });
     const duplicateSettlement = await app.inject({
@@ -581,6 +677,8 @@ describe.skipIf(databaseUrl === undefined)('AgentClear funding API with PostgreS
       settlements: string;
       refunds: string;
       settlementPayloads: string;
+      reputationEvents: string;
+      reputationPayloads: string;
     }>(sql`
       select
         (select state::text from jobs where id = ${jobId}) as state,
@@ -603,6 +701,10 @@ describe.skipIf(databaseUrl === undefined)('AgentClear funding API with PostgreS
         ,(select count(*)::text from settlement_operations where job_id = ${jobId}
           and outcome_serialized_transaction is null and escrow_serialized_transaction is null
         ) as "settlementPayloads"
+        ,(select count(*)::text from reputation_events where job_id = ${jobId}) as "reputationEvents"
+        ,(select count(*)::text from reputation_operations where job_id = ${jobId}
+          and serialized_transaction is null
+        ) as "reputationPayloads"
     `);
     expect(persisted.rows[0]).toEqual({
       state: 'PAID',
@@ -617,6 +719,8 @@ describe.skipIf(databaseUrl === undefined)('AgentClear funding API with PostgreS
       settlements: '1',
       refunds: '0',
       settlementPayloads: '1',
+      reputationEvents: '1',
+      reputationPayloads: '1',
     });
   });
 
@@ -628,7 +732,7 @@ describe.skipIf(databaseUrl === undefined)('AgentClear funding API with PostgreS
       url: '/v1/jobs',
       headers: { authorization, 'idempotency-key': randomUUID() },
       payload: {
-        buyerAgentId: 'erc8004:16602:123',
+        buyerAgentId: 'erc8004:31337:123',
         title: 'Return an accepted result',
         description: 'The provider must explicitly return an accepted result.',
         budget: { token: 'native', maxAmount: '0.25' },
@@ -672,7 +776,7 @@ describe.skipIf(databaseUrl === undefined)('AgentClear funding API with PostgreS
       url: `/v1/jobs/${jobId}/assign`,
       headers: { authorization, 'idempotency-key': randomUUID() },
       payload: {
-        providerAgentId: 'erc8004:16602:456',
+        providerAgentId: 'erc8004:31337:456',
         providerAddress,
       },
     });
@@ -721,6 +825,16 @@ describe.skipIf(databaseUrl === undefined)('AgentClear funding API with PostgreS
         outcomeTransactionHash: expect.stringMatching(/^0x[0-9a-f]{64}$/),
         escrowTransactionHash: expect.stringMatching(/^0x[0-9a-f]{64}$/),
       },
+      reputation: {
+        providerAgentId: 'erc8004:31337:456',
+        agentTokenId: '456',
+        value: '0',
+        valueDecimals: 0,
+        tag1: 'agentclear.outcome',
+        tag2: 'data',
+        transactionHash: expect.stringMatching(/^0x[0-9a-f]{64}$/),
+        feedbackIndex: expect.stringMatching(/^\d+$/),
+      },
     });
     expect(replayed.statusCode, replayed.body).toBe(200);
     expect(replayed.headers['idempotency-replayed']).toBe('true');
@@ -731,12 +845,19 @@ describe.skipIf(databaseUrl === undefined)('AgentClear funding API with PostgreS
       settlements: string;
       refunds: string;
       events: string;
+      reputationEvents: string;
     }>(sql`
       select
         (select count(*)::text from settlements where job_id = ${jobId}) as settlements,
         (select count(*)::text from refunds where job_id = ${jobId}) as refunds,
-        (select count(*)::text from job_state_events where job_id = ${jobId}) as events
+        (select count(*)::text from job_state_events where job_id = ${jobId}) as events,
+        (select count(*)::text from reputation_events where job_id = ${jobId}) as "reputationEvents"
     `);
-    expect(persisted.rows[0]).toEqual({ settlements: '0', refunds: '1', events: '11' });
+    expect(persisted.rows[0]).toEqual({
+      settlements: '0',
+      refunds: '1',
+      events: '11',
+      reputationEvents: '1',
+    });
   });
 });

@@ -17,7 +17,9 @@ export type DomainErrorCode =
   | 'VERIFICATION_POLICY_UNSUPPORTED'
   | 'EVIDENCE_INTEGRITY_FAILED'
   | 'SETTLEMENT_IN_PROGRESS'
-  | 'JOB_NOT_SETTLEABLE';
+  | 'JOB_NOT_SETTLEABLE'
+  | 'REPUTATION_IN_PROGRESS'
+  | 'JOB_NOT_REPUTABLE';
 
 export class DomainError extends Error {
   public constructor(
@@ -203,6 +205,26 @@ export class JobNotSettleableError extends DomainError {
     super(
       'JOB_NOT_SETTLEABLE',
       'The job has no final PASS or FAIL that can be settled under its refund policy.',
+      409,
+    );
+  }
+}
+
+export class ReputationInProgressError extends DomainError {
+  public constructor(jobId: string) {
+    super(
+      'REPUTATION_IN_PROGRESS',
+      `Job ${jobId} already has an unfinished reputation operation.`,
+      409,
+    );
+  }
+}
+
+export class JobNotReputableError extends DomainError {
+  public constructor() {
+    super(
+      'JOB_NOT_REPUTABLE',
+      'The job does not have a matching finalized payment or refund outcome.',
       409,
     );
   }

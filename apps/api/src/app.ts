@@ -11,6 +11,7 @@ import type {
   VerificationQueryService,
   VerificationService,
   SettlementService,
+  ReputationService,
 } from '@agentclear/domain';
 import { DomainError } from '@agentclear/domain';
 import Fastify, { LogController, type FastifyRequest, type FastifyServerOptions } from 'fastify';
@@ -62,6 +63,7 @@ export type BuildAppOptions = {
   verificationService?: VerificationService;
   verificationQueryService: VerificationQueryService;
   settlementService?: SettlementService;
+  reputationService?: ReputationService;
   chainHealth?: () => Promise<unknown>;
   storageHealth?: () => Promise<unknown>;
   logger?: FastifyServerOptions['logger'];
@@ -340,8 +342,15 @@ export async function buildApp(options: BuildAppOptions) {
       actor: { type: principal.kind === 'agent' ? 'agent' : 'operator', id: principal.id },
       idempotencyKey,
     });
+    const reputation = options.reputationService === undefined
+      ? null
+      : await options.reputationService.recordOutcome(id, request.body, {
+          actor: { type: principal.kind === 'agent' ? 'agent' : 'operator', id: principal.id },
+          idempotencyKey,
+        });
+    const replayed = result.replayed && (reputation?.replayed ?? true);
     return reply
-      .header('idempotency-replayed', result.replayed ? 'true' : 'false')
+      .header('idempotency-replayed', replayed ? 'true' : 'false')
       .send({
         data: {
           job: result.job,
@@ -355,6 +364,40 @@ export async function buildApp(options: BuildAppOptions) {
             escrowContractAddress: result.operation.escrowContractAddress,
             escrowTransactionHash: result.operation.escrowTransactionHash,
             escrowBlockNumber: result.operation.escrowBlockNumber,
+          },
+          reputation: reputation?.reputation ?? null,
+        },
+        meta: { requestId: request.id, replayed },
+      });
+  });
+
+  app.post('/v1/jobs/:id/reputation', async (request, reply) => {
+    const principal = requireScope(request, 'jobs:reputation');
+    const idempotencyKey = idempotencyKeySchema.parse(request.headers['idempotency-key']);
+    const { id } = jobIdParamsSchema.parse(request.params);
+    if (options.reputationService === undefined) {
+      throw new ApiError(
+        'CHAIN_UNAVAILABLE',
+        'Reputation is disabled because ERC-8004 registry configuration is absent.',
+        503,
+      );
+    }
+    const result = await options.reputationService.recordOutcome(id, request.body, {
+      actor: { type: principal.kind === 'agent' ? 'agent' : 'operator', id: principal.id },
+      idempotencyKey,
+    });
+    return reply
+      .header('idempotency-replayed', result.replayed ? 'true' : 'false')
+      .send({
+        data: {
+          reputation: result.reputation,
+          operation: {
+            status: result.operation.status,
+            transactionHash: result.operation.transactionHash,
+            blockNumber: result.operation.blockNumber,
+            feedbackIndex: result.operation.feedbackIndex,
+            registryAddress: result.operation.contractAddress,
+            identityRegistryAddress: result.operation.identityRegistryAddress,
           },
         },
         meta: { requestId: request.id, replayed: result.replayed },

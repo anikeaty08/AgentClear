@@ -24,6 +24,7 @@ import {
   submissionOperations,
   verificationOperations,
   settlementOperations,
+  reputationOperations,
 } from './schema.js';
 
 function rowToFundingOperation(
@@ -184,12 +185,18 @@ export class PostgresEscrowRepository implements EscrowRepository {
         .from(settlementOperations)
         .where(sql`${settlementOperations.status} <> 'CONFIRMED'`)
         .limit(1);
+      const [activeReputation] = await transaction
+        .select({ id: reputationOperations.id })
+        .from(reputationOperations)
+        .where(sql`${reputationOperations.status} <> 'CONFIRMED'`)
+        .limit(1);
       if (
         activeAssignment !== undefined
         || otherFunding !== undefined
         || activeSubmission !== undefined
         || activeVerification !== undefined
         || activeSettlement !== undefined
+        || activeReputation !== undefined
       ) {
         throw new ChainSignerBusyError();
       }
