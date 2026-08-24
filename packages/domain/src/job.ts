@@ -11,32 +11,71 @@ const checkPathSchema = z
 const checkBaseSchema = {
   id: z.string().regex(/^[A-Za-z0-9._:-]{1,100}$/),
   description: z.string().trim().min(1).max(500),
-  path: checkPathSchema,
   weightBps: z.number().int().min(1).max(10_000).default(10_000),
   hardFailure: z.boolean().default(true),
 };
 
+const jsonCheckBaseSchema = {
+  ...checkBaseSchema,
+  path: checkPathSchema,
+};
+
+export const sandboxTestVectorSchema = z
+  .object({
+    id: z.string().regex(/^[A-Za-z0-9._:-]{1,100}$/),
+    input: z.json(),
+    expected: z.json(),
+  })
+  .strict();
+
+export type SandboxTestVector = z.infer<typeof sandboxTestVectorSchema>;
+
+const sandboxCheckSchema = z
+  .object({
+    ...checkBaseSchema,
+    kind: z.literal('sandbox_tests'),
+    runtime: z.literal('node24'),
+    entryFile: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,98}\.mjs$/),
+    exportName: z.string().regex(/^(?:default|[A-Za-z_$][A-Za-z0-9_$]{0,99})$/),
+    testVectors: z.array(sandboxTestVectorSchema).min(1).max(100),
+  })
+  .strict()
+  .superRefine((check, context) => {
+    const ids = new Set<string>();
+    for (const [index, test] of check.testVectors.entries()) {
+      if (ids.has(test.id)) {
+        context.addIssue({
+          code: 'custom',
+          path: ['testVectors', index, 'id'],
+          message: 'Sandbox test vector IDs must be unique.',
+        });
+      }
+      ids.add(test.id);
+    }
+  });
+
 export const deterministicCheckSchema = z.discriminatedUnion('kind', [
   z
     .object({
-      ...checkBaseSchema,
+      ...jsonCheckBaseSchema,
       kind: z.literal('json_path_exists'),
     })
     .strict(),
   z
     .object({
-      ...checkBaseSchema,
+      ...jsonCheckBaseSchema,
       kind: z.literal('json_path_equals'),
       expected: z.json(),
     })
     .strict(),
   z
     .object({
-      ...checkBaseSchema,
+      ...jsonCheckBaseSchema,
       kind: z.literal('json_type'),
       expectedType: z.enum(['null', 'boolean', 'number', 'string', 'array', 'object']),
     })
     .strict(),
+  sandboxCheckSchema,
 ]);
 
 export type DeterministicCheck = z.infer<typeof deterministicCheckSchema>;

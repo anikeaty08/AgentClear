@@ -35,6 +35,9 @@ import {
   type EvidenceStore,
   type AiVerificationResult,
   type AiVerifier,
+  type SandboxExecutionRequest,
+  type SandboxExecutionResult,
+  type SandboxVerifier,
 } from '@agentclear/domain';
 import { sql } from 'drizzle-orm';
 import {
@@ -199,6 +202,34 @@ class ControlledIntegrationAiVerifier implements AiVerifier {
   }
 }
 
+class ControlledIntegrationSandboxVerifier implements SandboxVerifier {
+  public calls = 0;
+  public lastRequest: SandboxExecutionRequest | null = null;
+
+  public async execute(request: SandboxExecutionRequest): Promise<SandboxExecutionResult> {
+    this.calls += 1;
+    this.lastRequest = request;
+    return {
+      exitCode: 0,
+      stdoutSummary: JSON.stringify({ testCount: request.testVectors.length }),
+      stderrSummary: '',
+      durationMs: 12,
+      testCount: request.testVectors.length,
+      passedTests: request.testVectors.length,
+      failedTests: 0,
+      timedOut: false,
+      outputTruncated: false,
+      outOfMemory: false,
+      artifactHash: `0x${createHash('sha256').update(JSON.stringify(request.files)).digest('hex')}`,
+    };
+  }
+
+  public reset(): void {
+    this.calls = 0;
+    this.lastRequest = null;
+  }
+}
+
 describe.skipIf(databaseUrl === undefined)('AgentClear funding API with PostgreSQL and Anvil', () => {
   const database = createDatabaseClient(databaseUrl!);
   const apiKey = 'funding-integration-api-key-at-least-32-chars';
@@ -212,6 +243,7 @@ describe.skipIf(databaseUrl === undefined)('AgentClear funding API with PostgreS
   let providerAddress: Address;
   const evidenceStorage = new IntegrationEvidenceStorage();
   const controlledAiVerifier = new ControlledIntegrationAiVerifier();
+  const controlledSandboxVerifier = new ControlledIntegrationSandboxVerifier();
 
   beforeAll(async () => {
     const port = await reservePort();
@@ -373,6 +405,7 @@ describe.skipIf(databaseUrl === undefined)('AgentClear funding API with PostgreS
         storage: evidenceStorage,
         maxReportBytes: 262_144,
         aiVerifier: controlledAiVerifier,
+        sandboxVerifier: controlledSandboxVerifier,
         executor: chainWriteExecutor,
       }),
       settlementService: new SettlementService({
@@ -435,6 +468,7 @@ describe.skipIf(databaseUrl === undefined)('AgentClear funding API with PostgreS
   beforeEach(async () => {
     evidenceStorage.reset();
     controlledAiVerifier.reset();
+    controlledSandboxVerifier.reset();
     await database.db.execute(
       sql`truncate table receipts, receipt_operations, reputation_events, reputation_operations, settlements, refunds, settlement_operations, verification_reports, verification_checks, verification_runs, verification_operations, submission_artifacts, submissions, submission_operations, job_assignment_operations, job_assignments, escrow_funding_operations, escrows, idempotency_records, job_state_events, job_requirements, jobs`,
     );
@@ -458,28 +492,24 @@ describe.skipIf(databaseUrl === undefined)('AgentClear funding API with PostgreS
         description: 'Implement the requested TypeScript function.',
         budget: { token: 'native', maxAmount: '0.5' },
         deadline: '2030-08-23T16:00:00.000Z',
-        deliverable: { type: 'code', format: 'git_patch' },
+        deliverable: { type: 'code', format: 'esm_files' },
         verification: {
           mode: 'deterministic',
           minimumScore: 1,
-          requirements: ['Submission must report twelve passing tests and zero failures.'],
+          requirements: ['The isolated addition test vectors must all pass.'],
           deterministicChecks: [
             {
-              id: 'passed-tests',
-              kind: 'json_path_equals',
-              description: 'All twelve expected tests passed.',
-              path: ['tests', 'passed'],
-              expected: 12,
-              weightBps: 7000,
-              hardFailure: true,
-            },
-            {
-              id: 'failed-tests',
-              kind: 'json_path_equals',
-              description: 'No tests failed.',
-              path: ['tests', 'failed'],
-              expected: 0,
-              weightBps: 3000,
+              id: 'isolated-tests',
+              kind: 'sandbox_tests',
+              description: 'Execute the agreed vectors in the isolated runtime.',
+        runtime: 'node24',
+              entryFile: 'solution.mjs',
+              exportName: 'add',
+              testVectors: [
+                { id: 'positive', input: { a: 2, b: 3 }, expected: 5 },
+                { id: 'negative', input: { a: -2, b: 1 }, expected: -1 },
+              ],
+              weightBps: 10_000,
               hardFailure: true,
             },
           ],
@@ -573,8 +603,9 @@ describe.skipIf(databaseUrl === undefined)('AgentClear funding API with PostgreS
     const providerAuthorization = `Bearer ${providerApiKey}`;
     const submissionPayload = {
       result: {
-        patch: 'diff --git a/src/sorter.ts b/src/sorter.ts',
-        tests: { passed: 12, failed: 0 },
+        files: {
+          'solution.mjs': 'export function add({ a, b }) { return a + b; }',
+        },
       },
     };
     const unauthorizedSubmission = await app.inject({
@@ -644,16 +675,34 @@ describe.skipIf(databaseUrl === undefined)('AgentClear funding API with PostgreS
       url: `/v1/jobs/${jobId}/verifications`,
       headers: { authorization },
     });
-    expect(verified.statusCode).toBe(200);
+    expect(verified.statusCode, verified.body).toBe(200);
     expect(verified.json().data.job.state).toBe('PASSED');
     expect(verified.json().data.verification).toMatchObject({
       outcome: 'PASS',
       scoreBps: 10_000,
       reportStorageRootHash: expect.stringMatching(/^0x[0-9a-f]{64}$/),
+      checks: [
+        {
+          id: 'isolated-tests',
+          kind: 'sandbox_tests',
+          passed: true,
+          actual: {
+            exitCode: 0,
+            testCount: 2,
+            passedTests: 2,
+            failedTests: 0,
+          },
+        },
+      ],
     });
     expect(verificationReplay.headers['idempotency-replayed']).toBe('true');
     expect(verifications.json().data.verifications).toHaveLength(1);
     expect(evidenceStorage.calls).toBe(2);
+    expect(controlledSandboxVerifier.calls).toBe(1);
+    expect(controlledSandboxVerifier.lastRequest).toMatchObject({
+      entryFile: 'solution.mjs',
+      exportName: 'add',
+    });
 
     const settlementKey = randomUUID();
     const settled = await app.inject({
@@ -816,7 +865,7 @@ describe.skipIf(databaseUrl === undefined)('AgentClear funding API with PostgreS
       artifacts: '1',
       payload: null,
       verificationRuns: '1',
-      verificationChecks: '2',
+      verificationChecks: '1',
       verificationReports: '1',
       reportPayload: null,
       settlements: '1',

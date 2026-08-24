@@ -18,6 +18,8 @@ export type DomainErrorCode =
   | 'COMPUTE_UNAVAILABLE'
   | 'COMPUTE_OPERATION_FAILED'
   | 'COMPUTE_RECONCILIATION_REQUIRED'
+  | 'SANDBOX_UNAVAILABLE'
+  | 'SANDBOX_EXECUTION_FAILED'
   | 'EVIDENCE_INTEGRITY_FAILED'
   | 'SETTLEMENT_IN_PROGRESS'
   | 'JOB_NOT_SETTLEABLE'
@@ -214,6 +216,26 @@ export class ComputeReconciliationRequiredError extends DomainError {
       'COMPUTE_RECONCILIATION_REQUIRED',
       `Verification run ${runId} may have incurred a paid 0G Compute request and requires operator reconciliation before retry.`,
       409,
+    );
+  }
+}
+
+export class SandboxUnavailableError extends DomainError {
+  public constructor() {
+    super(
+      'SANDBOX_UNAVAILABLE',
+      'This verification policy requires a configured isolated code sandbox.',
+      503,
+    );
+  }
+}
+
+export class SandboxExecutionFailedError extends DomainError {
+  public constructor() {
+    super(
+      'SANDBOX_EXECUTION_FAILED',
+      'The isolated code sandbox could not complete the verification run safely.',
+      502,
     );
   }
 }

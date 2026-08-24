@@ -31,6 +31,7 @@ import {
   ReceiptService,
 } from '@agentclear/domain';
 import { ZeroGStorageClient } from '@agentclear/storage';
+import { DockerSandboxVerifier, createWslDockerSandbox } from '@agentclear/sandbox';
 
 import { buildApp } from './app.js';
 import { BootstrapApiKeyAuthenticator, CompositeAuthenticator } from './auth.js';
@@ -135,6 +136,32 @@ const computeVerifier =
         maxResponseBytes: config.compute.maxResponseBytes,
         requireTee: config.compute.requireTee,
       });
+const sandboxVerifier =
+  config.sandbox === undefined
+    ? undefined
+    : config.sandbox.containerCli === 'wsl-docker'
+      ? createWslDockerSandbox({
+          image: config.sandbox.image,
+          timeoutMs: config.sandbox.timeoutMs,
+          maxOutputBytes: config.sandbox.maxOutputBytes,
+          maxFileBytes: config.sandbox.maxFileBytes,
+          maxTotalFileBytes: config.sandbox.maxTotalFileBytes,
+          memoryMb: config.sandbox.memoryMb,
+          cpuLimit: config.sandbox.cpuLimit,
+          processLimit: config.sandbox.processLimit,
+          temporaryFilesystemMb: config.sandbox.temporaryFilesystemMb,
+        })
+      : new DockerSandboxVerifier({
+          image: config.sandbox.image,
+          timeoutMs: config.sandbox.timeoutMs,
+          maxOutputBytes: config.sandbox.maxOutputBytes,
+          maxFileBytes: config.sandbox.maxFileBytes,
+          maxTotalFileBytes: config.sandbox.maxTotalFileBytes,
+          memoryMb: config.sandbox.memoryMb,
+          cpuLimit: config.sandbox.cpuLimit,
+          processLimit: config.sandbox.processLimit,
+          temporaryFilesystemMb: config.sandbox.temporaryFilesystemMb,
+        });
 const submissionRepository = new PostgresSubmissionRepository(database.db);
 const verificationRepository = new PostgresVerificationRepository(database.db);
 const settlementRepository = new PostgresSettlementRepository(database.db);
@@ -159,6 +186,7 @@ const verificationService =
         storage,
         maxReportBytes: config.storage.maxPayloadBytes,
         ...(computeVerifier === undefined ? {} : { aiVerifier: computeVerifier }),
+        ...(sandboxVerifier === undefined ? {} : { sandboxVerifier }),
         requireVerifiedAiResponse: config.compute?.requireTee ?? true,
         executor: chainWriteExecutor,
       });
@@ -243,6 +271,15 @@ const app = await buildApp({
   ...(computeVerifier === undefined
     ? {}
     : { computeHealth: async () => computeVerifier.health() }),
+  ...(sandboxVerifier === undefined
+    ? {}
+    : {
+        sandboxHealth: async () => {
+          const health = await sandboxVerifier.health();
+          if (!health.ready) throw new Error('Configured sandbox image is unavailable.');
+          return health;
+        },
+      }),
   logger: {
     level: config.api.logLevel,
     redact: {

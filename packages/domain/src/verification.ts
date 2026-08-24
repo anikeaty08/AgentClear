@@ -10,6 +10,8 @@ import {
   ComputeUnavailableError,
   EvidenceIntegrityFailedError,
   JobNotFoundError,
+  SandboxExecutionFailedError,
+  SandboxUnavailableError,
   StorageOperationFailedError,
   VerificationPolicyUnsupportedError,
 } from './errors.js';
@@ -22,6 +24,11 @@ import type {
   VerificationRubric,
 } from './job.js';
 import type { IdempotencyClaim, JobRepository } from './job-repository.js';
+import {
+  parseSandboxSubmission,
+  type SandboxExecutionResult,
+  type SandboxVerifier,
+} from './sandbox.js';
 import {
   submissionManifestSchema,
   type EvidenceStorageResult,
@@ -133,9 +140,9 @@ export type VerificationReport = VerificationReportV1 | VerificationReportV2;
 const verificationCheckResultSchema = z
   .object({
     id: z.string().min(1).max(100),
-    kind: z.enum(['json_path_exists', 'json_path_equals', 'json_type']),
+    kind: z.enum(['json_path_exists', 'json_path_equals', 'json_type', 'sandbox_tests']),
     description: z.string().min(1).max(500),
-    path: z.array(z.union([z.string(), z.number().int().min(0)])).min(1).max(32),
+    path: z.array(z.union([z.string(), z.number().int().min(0)])).max(32),
     weightBps: z.number().int().min(1).max(10_000),
     hardFailure: z.boolean(),
     passed: z.boolean(),
@@ -143,7 +150,23 @@ const verificationCheckResultSchema = z
     actual: z.json().optional(),
     message: z.string().min(1).max(500),
   })
-  .strict();
+  .strict()
+  .superRefine((check, context) => {
+    if (check.kind === 'sandbox_tests' && check.path.length !== 0) {
+      context.addIssue({
+        code: 'custom',
+        path: ['path'],
+        message: 'Sandbox checks do not use a JSON path.',
+      });
+    }
+    if (check.kind !== 'sandbox_tests' && check.path.length === 0) {
+      context.addIssue({
+        code: 'custom',
+        path: ['path'],
+        message: 'JSON checks require a non-empty path.',
+      });
+    }
+  });
 
 const verificationReportV1Schema = z
   .object({
@@ -368,6 +391,7 @@ function jsonType(value: JsonValue): 'array' | 'boolean' | 'null' | 'number' | '
 }
 
 function evaluateCheck(check: DeterministicCheck, result: JsonValue): VerificationCheckResult {
+  if (check.kind === 'sandbox_tests') throw new VerificationPolicyUnsupportedError();
   const resolved = resolvePath(result, check.path);
   const common = {
     id: check.id,
@@ -421,6 +445,37 @@ export function evaluateDeterministicChecks(
     checks: evaluated,
     scoreBps,
     hardFailure: evaluated.some((check) => check.hardFailure && !check.passed),
+  };
+}
+
+function calculateDeterministicResult(
+  evaluated: VerificationCheckResult[],
+): { checks: VerificationCheckResult[]; scoreBps: number; hardFailure: boolean } {
+  const totalWeight = evaluated.reduce((total, check) => total + check.weightBps, 0);
+  const passedWeight = evaluated.reduce(
+    (total, check) => total + (check.passed ? check.weightBps : 0),
+    0,
+  );
+  return {
+    checks: evaluated,
+    scoreBps: totalWeight === 0 ? 0 : Math.round((passedWeight * 10_000) / totalWeight),
+    hardFailure: evaluated.some((check) => check.hardFailure && !check.passed),
+  };
+}
+
+function sandboxCheckActual(result: SandboxExecutionResult): JsonValue {
+  return {
+    exitCode: result.exitCode,
+    durationMs: result.durationMs,
+    testCount: result.testCount,
+    passedTests: result.passedTests,
+    failedTests: result.failedTests,
+    timedOut: result.timedOut,
+    outputTruncated: result.outputTruncated,
+    outOfMemory: result.outOfMemory,
+    artifactHash: result.artifactHash,
+    stdoutSummary: result.stdoutSummary,
+    stderrSummary: result.stderrSummary,
   };
 }
 
@@ -562,6 +617,7 @@ export class VerificationService {
   readonly #repository: VerificationRepository;
   readonly #storage: EvidenceStore;
   readonly #aiVerifier: AiVerifier | undefined;
+  readonly #sandboxVerifier: SandboxVerifier | undefined;
   readonly #requireVerifiedAiResponse: boolean;
   readonly #maxReportBytes: number;
   readonly #executor: ExclusiveExecutor;
@@ -574,6 +630,7 @@ export class VerificationService {
     verificationRepository: VerificationRepository;
     storage: EvidenceStore;
     aiVerifier?: AiVerifier;
+    sandboxVerifier?: SandboxVerifier;
     requireVerifiedAiResponse?: boolean;
     maxReportBytes: number;
     executor?: ExclusiveExecutor;
@@ -588,6 +645,7 @@ export class VerificationService {
     this.#repository = dependencies.verificationRepository;
     this.#storage = dependencies.storage;
     this.#aiVerifier = dependencies.aiVerifier;
+    this.#sandboxVerifier = dependencies.sandboxVerifier;
     this.#requireVerifiedAiResponse = dependencies.requireVerifiedAiResponse ?? true;
     this.#maxReportBytes = dependencies.maxReportBytes;
     this.#executor = dependencies.executor ?? new InMemoryExclusiveExecutor();
@@ -613,6 +671,12 @@ export class VerificationService {
       }
       if (job.agreement.verification.mode !== 'deterministic' && this.#aiVerifier === undefined) {
         throw new ComputeUnavailableError();
+      }
+      if (
+        configuredChecks.some((check) => check.kind === 'sandbox_tests')
+        && this.#sandboxVerifier === undefined
+      ) {
+        throw new SandboxUnavailableError();
       }
 
       const now = this.#clock();
@@ -782,7 +846,7 @@ export class VerificationService {
     ) {
       throw new EvidenceIntegrityFailedError();
     }
-    const evaluated = evaluateDeterministicChecks(
+    const evaluated = await this.#evaluateDeterministicPolicy(
       job.agreement.verification.deterministicChecks ?? [],
       manifest.deliverable.result as JsonValue,
     );
@@ -849,5 +913,75 @@ export class VerificationService {
       startedAt: operation.startedAt,
       completedAt: this.#clock().toISOString(),
     };
+  }
+
+  async #evaluateDeterministicPolicy(
+    checks: readonly DeterministicCheck[],
+    result: JsonValue,
+  ): Promise<{ checks: VerificationCheckResult[]; scoreBps: number; hardFailure: boolean }> {
+    const evaluated: VerificationCheckResult[] = [];
+    for (const check of checks) {
+      if (check.kind !== 'sandbox_tests') {
+        evaluated.push(evaluateCheck(check, result));
+        continue;
+      }
+      const files = parseSandboxSubmission(result);
+      if (files === null || !Object.prototype.hasOwnProperty.call(files, check.entryFile)) {
+        evaluated.push({
+          id: check.id,
+          kind: check.kind,
+          description: check.description,
+          path: [],
+          weightBps: check.weightBps,
+          hardFailure: check.hardFailure,
+          passed: false,
+          expected: { entryFile: check.entryFile, testCount: check.testVectors.length },
+          actual: files === null ? { submissionShape: 'invalid' } : { entryFile: 'missing' },
+          message: 'The code submission did not contain the agreed executable module.',
+        });
+        continue;
+      }
+      if (this.#sandboxVerifier === undefined) throw new SandboxUnavailableError();
+      let sandboxResult: SandboxExecutionResult;
+      try {
+        sandboxResult = await this.#sandboxVerifier.execute({
+          runtime: check.runtime,
+          files,
+          entryFile: check.entryFile,
+          exportName: check.exportName,
+          testVectors: check.testVectors,
+        });
+      } catch (error) {
+        if (error instanceof DomainError) throw error;
+        throw new SandboxExecutionFailedError();
+      }
+      const passed =
+        sandboxResult.exitCode === 0
+        && !sandboxResult.timedOut
+        && !sandboxResult.outputTruncated
+        && !sandboxResult.outOfMemory
+        && sandboxResult.testCount === check.testVectors.length
+        && sandboxResult.passedTests === check.testVectors.length
+        && sandboxResult.failedTests === 0;
+      evaluated.push({
+        id: check.id,
+        kind: check.kind,
+        description: check.description,
+        path: [],
+        weightBps: check.weightBps,
+        hardFailure: check.hardFailure,
+        passed,
+        expected: {
+          exitCode: 0,
+          testCount: check.testVectors.length,
+          passedTests: check.testVectors.length,
+        },
+        actual: sandboxCheckActual(sandboxResult),
+        message: passed
+          ? 'All isolated sandbox test vectors passed.'
+          : 'The isolated sandbox run failed one or more safety or correctness gates.',
+      });
+    }
+    return calculateDeterministicResult(evaluated);
   }
 }

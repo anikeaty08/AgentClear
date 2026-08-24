@@ -137,6 +137,68 @@ describe('deterministic verification', () => {
     });
   });
 
+  it('validates an explicit code-sandbox contract without accepting path traversal or duplicate vectors', () => {
+    const base = {
+      buyerAgentId: 'erc8004:16602:123',
+      title: 'Implement an isolated addition function',
+      description: 'Return an ESM module that passes the supplied vectors.',
+      budget: { token: 'native' as const, maxAmount: '1' },
+      deadline: '2030-08-23T16:00:00.000Z',
+      deliverable: { type: 'code' as const, format: 'esm_files' },
+      verification: {
+        mode: 'deterministic' as const,
+        minimumScore: 1,
+        requirements: ['All isolated test vectors must pass.'],
+        deterministicChecks: [
+          {
+            id: 'isolated-tests',
+            kind: 'sandbox_tests' as const,
+            description: 'Run the agreed vectors without host or network access.',
+            runtime: 'node24' as const,
+            entryFile: 'solution.mjs',
+            exportName: 'add',
+            testVectors: [{ id: 'add', input: { a: 1, b: 2 }, expected: 3 }],
+          },
+        ],
+      },
+      refundPolicy: { onExpiry: true, onFinalFailure: true },
+    };
+
+    expect(createJobInputSchema.parse(base).verification.deterministicChecks?.[0]).toMatchObject({
+      kind: 'sandbox_tests',
+      entryFile: 'solution.mjs',
+      hardFailure: true,
+    });
+    expect(() =>
+      createJobInputSchema.parse({
+        ...base,
+        verification: {
+          ...base.verification,
+          deterministicChecks: [
+            { ...base.verification.deterministicChecks[0], entryFile: '../solution.mjs' },
+          ],
+        },
+      }),
+    ).toThrow();
+    expect(() =>
+      createJobInputSchema.parse({
+        ...base,
+        verification: {
+          ...base.verification,
+          deterministicChecks: [
+            {
+              ...base.verification.deterministicChecks[0],
+              testVectors: [
+                base.verification.deterministicChecks[0]!.testVectors[0]!,
+                base.verification.deterministicChecks[0]!.testVectors[0]!,
+              ],
+            },
+          ],
+        },
+      }),
+    ).toThrow();
+  });
+
   it('requires a complete machine-readable rubric for AI verification modes', () => {
     const base = {
       buyerAgentId: 'erc8004:16602:123',

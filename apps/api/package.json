@@ -18,6 +18,7 @@
     "@agentclear/compute": "workspace:*",
     "@agentclear/db": "workspace:*",
     "@agentclear/domain": "workspace:*",
+    "@agentclear/sandbox": "workspace:*",
     "@agentclear/storage": "workspace:*",
     "@fastify/rate-limit": "11.2.0",
     "fastify": "5.12.1",

@@ -87,6 +87,7 @@ export type BuildAppOptions = {
   chainHealth?: () => Promise<unknown>;
   storageHealth?: () => Promise<unknown>;
   computeHealth?: () => Promise<unknown>;
+  sandboxHealth?: () => Promise<unknown>;
   logger?: FastifyServerOptions['logger'];
 };
 
@@ -165,6 +166,7 @@ export async function buildApp(options: BuildAppOptions) {
       if (options.chainHealth !== undefined) await options.chainHealth();
       if (options.storageHealth !== undefined) await options.storageHealth();
       if (options.computeHealth !== undefined) await options.computeHealth();
+      if (options.sandboxHealth !== undefined) await options.sandboxHealth();
       return {
         status: 'ready',
         dependencies: {
@@ -172,6 +174,7 @@ export async function buildApp(options: BuildAppOptions) {
           chain: options.chainHealth === undefined ? 'disabled' : 'up',
           storage: options.storageHealth === undefined ? 'disabled' : 'up',
           compute: options.computeHealth === undefined ? 'disabled' : 'up',
+          sandbox: options.sandboxHealth === undefined ? 'disabled' : 'up',
         },
       };
     } catch (error) {

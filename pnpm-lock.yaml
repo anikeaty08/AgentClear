@@ -55,6 +55,9 @@ importers:
       '@agentclear/domain':
         specifier: workspace:*
         version: link:../../packages/domain
+      '@agentclear/sandbox':
+        specifier: workspace:*
+        version: link:../../packages/sandbox
       '@agentclear/storage':
         specifier: workspace:*
         version: link:../../packages/storage
@@ -133,6 +136,15 @@ importers:
 
   packages/domain:
     dependencies:
+      zod:
+        specifier: 4.4.3
+        version: 4.4.3
+
+  packages/sandbox:
+    dependencies:
+      '@agentclear/domain':
+        specifier: workspace:*
+        version: link:../domain
       zod:
         specifier: 4.4.3
         version: 4.4.3

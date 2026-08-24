@@ -76,7 +76,9 @@ The REST response contains evidence metadata, never the stored canonical payload
 
 ## Verification and 0G Compute boundary
 
-The agreement carries typed deterministic checks instead of asking the verifier to infer rules from prose. `VerificationService` proof-downloads the latest submission, verifies its SHA-256 commitment and manifest bindings, evaluates paths with exact JSON semantics, and calculates an integer weighted score. Hard failures dominate. Reports identify the agreement, submission, verifier version, individual checks, score, and outcome.
+The agreement carries typed deterministic checks instead of asking the verifier to infer rules from prose. `VerificationService` proof-downloads the latest submission, verifies its SHA-256 commitment and manifest bindings, evaluates paths with exact JSON semantics, dispatches explicit executable vectors through the `SandboxVerifier` port, and calculates one integer weighted score. Hard failures dominate. Reports identify the agreement, submission, verifier version, individual checks, sandbox exit/resource/result metadata, score, and outcome.
+
+`packages/sandbox` is a separate infrastructure adapter. It rejects mutable images and unsafe paths, writes a bounded temporary workspace, creates a networkless/read-only/capability-free/unprivileged/resource-limited Docker container, attaches with bounded output and a real timeout, inspects the terminal state, and force-removes the container in `finally`. No submitted module is loaded on the API host. The production Docker daemon remains a privileged boundary and should live on a dedicated worker host; see `docs/SANDBOX.md`.
 
 AI modes also require an explicit weighted rubric. Domain code constructs and hashes canonical prompt JSON; the 0G adapter validates the configured on-chain provider, advertised model, account balance, and TEE acknowledgement, gets SDK billing headers, sends one bounded inference request, calls `processResponse`, and strictly parses the result. Domain code recomputes rubric totals and applies hard-gate consensus rather than averaging away a deterministic failure.
 
@@ -138,9 +140,9 @@ One receipt is permitted per job and commitment. REST and the future MCP adapter
 
 PostgreSQL is currently the only stateful dependency. Redis was intentionally omitted. Verification dispatch, chain reconciliation, and webhook delivery will first use a PostgreSQL outbox/lease design with idempotent workers. Another queue system should be added only when measured throughput or isolation requirements justify it.
 
-## Planned core flow
+## Core flow
 
-The next boundaries will preserve the same domain-service pattern:
+The remaining boundaries preserve the same domain-service pattern:
 
 ```text
 agreement -> 0G Chain escrow -> 0G Storage submission evidence
@@ -148,4 +150,4 @@ agreement -> 0G Chain escrow -> 0G Storage submission evidence
           -> outcome anchor -> settle/refund -> ERC-8004 feedback -> receipt
 ```
 
-Outcome anchoring, settlement/refund, ERC-8004 feedback, portable receipts, and the real 0G Compute SDK adapter are implemented locally. The sandbox remains planned. Each adapter exposes degraded health until it has valid configuration, and integration tests distinguish controlled local boundaries from live 0G testnet proof.
+Outcome anchoring, settlement/refund, ERC-8004 feedback, portable receipts, the real 0G Compute SDK adapter, and the disposable Docker sandbox are implemented locally. Each adapter exposes degraded health until it has valid configuration, and integration tests distinguish controlled local boundaries from live 0G testnet proof. MCP and web adapters remain to be connected to these same services.

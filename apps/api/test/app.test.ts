@@ -113,7 +113,7 @@ const validJob = {
 
 const apps: Awaited<ReturnType<typeof buildApp>>[] = [];
 
-async function createTestApp() {
+async function createTestApp(options: { sandboxHealth?: () => Promise<unknown> } = {}) {
   const repository = new MemoryJobRepository();
   const submissionRepository = {
     async listByJob() {
@@ -134,6 +134,7 @@ async function createTestApp() {
     submissionQueryService: new SubmissionQueryService(repository, submissionRepository),
     verificationQueryService: new VerificationQueryService(repository, verificationRepository),
     authenticator,
+    ...options,
   });
   apps.push(app);
   return app;
@@ -150,6 +151,19 @@ describe('AgentClear API', () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual({ status: 'ok' });
+  });
+
+  it('fails readiness without leaking details when the configured sandbox is unavailable', async () => {
+    const app = await createTestApp({
+      sandboxHealth: async () => {
+        throw new Error('private daemon detail');
+      },
+    });
+    const response = await app.inject({ method: 'GET', url: '/ready' });
+
+    expect(response.statusCode).toBe(503);
+    expect(response.json()).toEqual({ status: 'not_ready' });
+    expect(response.body).not.toContain('private daemon detail');
   });
 
   it('requires authentication for versioned API routes', async () => {

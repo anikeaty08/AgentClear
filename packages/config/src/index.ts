@@ -46,6 +46,34 @@ const runtimeConfigSchema = z
     COMPUTE_REQUIRE_TEE: optionalEnvironmentValue(
       z.enum(['true', 'false']).transform((value) => value === 'true'),
     ),
+    SANDBOX_NODE_IMAGE: optionalEnvironmentValue(
+      z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._/:+-]*@sha256:[0-9a-f]{64}$/),
+    ),
+    SANDBOX_CONTAINER_CLI: optionalEnvironmentValue(z.enum(['docker', 'wsl-docker'])),
+    SANDBOX_TIMEOUT_MS: optionalEnvironmentValue(
+      z.coerce.number().int().min(1_000).max(30_000),
+    ),
+    SANDBOX_MAX_OUTPUT_BYTES: optionalEnvironmentValue(
+      z.coerce.number().int().min(1_024).max(1_048_576),
+    ),
+    SANDBOX_MAX_FILE_BYTES: optionalEnvironmentValue(
+      z.coerce.number().int().min(1_024).max(262_144),
+    ),
+    SANDBOX_MAX_TOTAL_FILE_BYTES: optionalEnvironmentValue(
+      z.coerce.number().int().min(1_024).max(1_048_576),
+    ),
+    SANDBOX_MEMORY_MB: optionalEnvironmentValue(
+      z.coerce.number().int().min(32).max(512),
+    ),
+    SANDBOX_CPU_LIMIT: optionalEnvironmentValue(
+      z.string().regex(/^(?:0\.[1-9]|[1-9]\d*(?:\.\d+)?)$/),
+    ),
+    SANDBOX_PROCESS_LIMIT: optionalEnvironmentValue(
+      z.coerce.number().int().min(1).max(128),
+    ),
+    SANDBOX_TMPFS_MB: optionalEnvironmentValue(
+      z.coerce.number().int().min(1).max(64),
+    ),
   })
   .strict()
   .superRefine((value, context) => {
@@ -159,6 +187,17 @@ const runtimeConfigSchema = z
         message: '0G Compute and protocol chain writers must use separate signer keys.',
       });
     }
+    if (
+      value.SANDBOX_MAX_FILE_BYTES !== undefined
+      && value.SANDBOX_MAX_TOTAL_FILE_BYTES !== undefined
+      && value.SANDBOX_MAX_FILE_BYTES > value.SANDBOX_MAX_TOTAL_FILE_BYTES
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['SANDBOX_MAX_TOTAL_FILE_BYTES'],
+        message: 'The total sandbox file limit cannot be lower than the per-file limit.',
+      });
+    }
 
     if (value.NODE_ENV !== 'production') {
       return;
@@ -223,6 +262,13 @@ const runtimeConfigSchema = z
         message: 'Local 0G Compute RPC settings are forbidden in production.',
       });
     }
+    if (value.SANDBOX_CONTAINER_CLI === 'wsl-docker') {
+      context.addIssue({
+        code: 'custom',
+        path: ['SANDBOX_CONTAINER_CLI'],
+        message: 'The WSL Docker bridge is for local development only.',
+      });
+    }
   });
 
 export type RuntimeConfig = {
@@ -273,6 +319,18 @@ export type RuntimeConfig = {
     maxResponseBytes: number;
     requireTee: boolean;
   };
+  sandbox?: {
+    image: string;
+    containerCli: 'docker' | 'wsl-docker';
+    timeoutMs: number;
+    maxOutputBytes: number;
+    maxFileBytes: number;
+    maxTotalFileBytes: number;
+    memoryMb: number;
+    cpuLimit: string;
+    processLimit: number;
+    temporaryFilesystemMb: number;
+  };
 };
 
 export function loadRuntimeConfig(environment: NodeJS.ProcessEnv = process.env): RuntimeConfig {
@@ -308,6 +366,16 @@ export function loadRuntimeConfig(environment: NodeJS.ProcessEnv = process.env):
     COMPUTE_TIMEOUT_MS: environment['COMPUTE_TIMEOUT_MS'],
     COMPUTE_MAX_RESPONSE_BYTES: environment['COMPUTE_MAX_RESPONSE_BYTES'],
     COMPUTE_REQUIRE_TEE: environment['COMPUTE_REQUIRE_TEE'],
+    SANDBOX_NODE_IMAGE: environment['SANDBOX_NODE_IMAGE'],
+    SANDBOX_CONTAINER_CLI: environment['SANDBOX_CONTAINER_CLI'],
+    SANDBOX_TIMEOUT_MS: environment['SANDBOX_TIMEOUT_MS'],
+    SANDBOX_MAX_OUTPUT_BYTES: environment['SANDBOX_MAX_OUTPUT_BYTES'],
+    SANDBOX_MAX_FILE_BYTES: environment['SANDBOX_MAX_FILE_BYTES'],
+    SANDBOX_MAX_TOTAL_FILE_BYTES: environment['SANDBOX_MAX_TOTAL_FILE_BYTES'],
+    SANDBOX_MEMORY_MB: environment['SANDBOX_MEMORY_MB'],
+    SANDBOX_CPU_LIMIT: environment['SANDBOX_CPU_LIMIT'],
+    SANDBOX_PROCESS_LIMIT: environment['SANDBOX_PROCESS_LIMIT'],
+    SANDBOX_TMPFS_MB: environment['SANDBOX_TMPFS_MB'],
   });
 
   const chain =
@@ -365,6 +433,21 @@ export function loadRuntimeConfig(environment: NodeJS.ProcessEnv = process.env):
           maxResponseBytes: parsed.COMPUTE_MAX_RESPONSE_BYTES ?? 1_048_576,
           requireTee: parsed.COMPUTE_REQUIRE_TEE ?? true,
         };
+  const sandbox =
+    parsed.SANDBOX_NODE_IMAGE === undefined
+      ? undefined
+      : {
+          image: parsed.SANDBOX_NODE_IMAGE,
+          containerCli: parsed.SANDBOX_CONTAINER_CLI ?? 'docker',
+          timeoutMs: parsed.SANDBOX_TIMEOUT_MS ?? 10_000,
+          maxOutputBytes: parsed.SANDBOX_MAX_OUTPUT_BYTES ?? 65_536,
+          maxFileBytes: parsed.SANDBOX_MAX_FILE_BYTES ?? 65_536,
+          maxTotalFileBytes: parsed.SANDBOX_MAX_TOTAL_FILE_BYTES ?? 262_144,
+          memoryMb: parsed.SANDBOX_MEMORY_MB ?? 128,
+          cpuLimit: parsed.SANDBOX_CPU_LIMIT ?? '0.5',
+          processLimit: parsed.SANDBOX_PROCESS_LIMIT ?? 32,
+          temporaryFilesystemMb: parsed.SANDBOX_TMPFS_MB ?? 16,
+        };
 
   return {
     nodeEnv: parsed.NODE_ENV,
@@ -383,5 +466,6 @@ export function loadRuntimeConfig(environment: NodeJS.ProcessEnv = process.env):
     ...(chain === undefined ? {} : { chain }),
     ...(storage === undefined ? {} : { storage }),
     ...(compute === undefined ? {} : { compute }),
+    ...(sandbox === undefined ? {} : { sandbox }),
   };
 }

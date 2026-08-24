@@ -211,4 +211,35 @@ describe('loadRuntimeConfig', () => {
       }),
     ).toThrow('0G Compute and protocol chain writers must use separate signer keys.');
   });
+
+  it('requires a digest-pinned sandbox image and maps bounded resource defaults', () => {
+    expect(() =>
+      loadRuntimeConfig({ ...validEnvironment, SANDBOX_NODE_IMAGE: 'node:24-alpine' }),
+    ).toThrow();
+
+    const image = `node@sha256:${'a'.repeat(64)}`;
+    expect(loadRuntimeConfig({ ...validEnvironment, SANDBOX_NODE_IMAGE: image }).sandbox).toEqual({
+      image,
+      containerCli: 'docker',
+      timeoutMs: 10_000,
+      maxOutputBytes: 65_536,
+      maxFileBytes: 65_536,
+      maxTotalFileBytes: 262_144,
+      memoryMb: 128,
+      cpuLimit: '0.5',
+      processLimit: 32,
+      temporaryFilesystemMb: 16,
+    });
+  });
+
+  it('rejects local WSL container bridging in production', () => {
+    expect(() =>
+      loadRuntimeConfig({
+        ...validEnvironment,
+        NODE_ENV: 'production',
+        SANDBOX_NODE_IMAGE: `node@sha256:${'a'.repeat(64)}`,
+        SANDBOX_CONTAINER_CLI: 'wsl-docker',
+      }),
+    ).toThrow('The WSL Docker bridge is for local development only.');
+  });
 });

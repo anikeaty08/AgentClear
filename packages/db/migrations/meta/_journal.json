@@ -64,6 +64,13 @@
       "when": 1787500800000,
       "tag": "0008_0g_compute_verification",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1787587200000,
+      "tag": "0009_sandbox_verification",
+      "breakpoints": true
     }
   ]
 }
