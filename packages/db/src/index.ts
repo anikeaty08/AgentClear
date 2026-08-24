@@ -1,6 +1,7 @@
 export * from './client.js';
 export * from './api-key-repository.js';
 export * from './assignment-repository.js';
+export * from './closure-repository.js';
 export * from './escrow-repository.js';
 export * from './exclusive-executor.js';
 export * from './job-repository.js';

@@ -1,4 +1,5 @@
 export * from './canonical.js';
+export * from './closure.js';
 export * from './api-key.js';
 export * from './assignment.js';
 export * from './errors.js';

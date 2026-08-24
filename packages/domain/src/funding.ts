@@ -6,6 +6,7 @@ import { sha256Commitment } from './canonical.js';
 import {
   ChainOperationFailedError,
   DomainError,
+  JobExpiryRefundDisabledError,
   JobNotFoundError,
   SpendingApprovalRequiredError,
   SpendingAuthorizationConflictError,
@@ -164,6 +165,9 @@ export class FundingService {
       const job = await this.#jobRepository.findById(jobId);
       if (job === null) {
         throw new JobNotFoundError(jobId);
+      }
+      if (job.agreement.refundPolicy.onExpiry !== true) {
+        throw new JobExpiryRefundDisabledError();
       }
       if (BigInt(job.budgetAmountBaseUnits) > this.#maxPerJobBaseUnits) {
         throw new SpendingPolicyExceededError();

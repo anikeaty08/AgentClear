@@ -19,6 +19,7 @@ import {
   escrows,
   idempotencyRecords,
   jobAssignmentOperations,
+  jobClosureOperations,
   jobs,
   jobStateEvents,
   submissionOperations,
@@ -196,6 +197,11 @@ export class PostgresEscrowRepository implements EscrowRepository {
         .from(receiptOperations)
         .where(sql`${receiptOperations.status} <> 'CONFIRMED'`)
         .limit(1);
+      const [activeClosure] = await transaction
+        .select({ id: jobClosureOperations.id })
+        .from(jobClosureOperations)
+        .where(inArray(jobClosureOperations.status, ['CREATED', 'PREPARED', 'BROADCAST']))
+        .limit(1);
       if (
         activeAssignment !== undefined
         || otherFunding !== undefined
@@ -204,6 +210,7 @@ export class PostgresEscrowRepository implements EscrowRepository {
         || activeSettlement !== undefined
         || activeReputation !== undefined
         || activeReceipt !== undefined
+        || activeClosure !== undefined
       ) {
         throw new ChainSignerBusyError();
       }

@@ -17,6 +17,7 @@ import {
   escrowFundingOperations,
   idempotencyRecords,
   jobAssignmentOperations,
+  jobClosureOperations,
   jobs,
   reputationEvents,
   reputationOperations,
@@ -176,6 +177,10 @@ export class PostgresReputationRepository implements ReputationRepository {
         .from(receiptOperations)
         .where(ne(receiptOperations.status, 'CONFIRMED'))
         .limit(1);
+      const [activeClosure] = await transaction.select({ id: jobClosureOperations.id })
+        .from(jobClosureOperations)
+        .where(inArray(jobClosureOperations.status, ['CREATED', 'PREPARED', 'BROADCAST']))
+        .limit(1);
       if (
         activeFunding !== undefined
         || activeAssignment !== undefined
@@ -184,6 +189,7 @@ export class PostgresReputationRepository implements ReputationRepository {
         || activeSettlement !== undefined
         || activeReputation !== undefined
         || activeReceipt !== undefined
+        || activeClosure !== undefined
       ) throw new ChainSignerBusyError();
       const [inserted] = await transaction.insert(reputationOperations).values({
         id: input.operation.id,

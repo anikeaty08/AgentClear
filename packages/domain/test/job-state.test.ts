@@ -31,5 +31,8 @@ describe('job state machine', () => {
   it('keeps paid jobs terminal', () => {
     expect(getAllowedJobTransitions('PAID')).toEqual([]);
   });
-});
 
+  it('allows an overdue unfunded draft to be marked expired', () => {
+    expect(canTransitionJob('DRAFT', 'EXPIRED')).toBe(true);
+  });
+});

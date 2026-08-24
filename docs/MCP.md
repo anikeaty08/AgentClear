@@ -26,6 +26,7 @@ The transport is stateless and JSON-response based. It validates the `Host` head
 | `list_jobs` | `GET /v1/jobs` | Read-only cursor pagination and filters |
 | `fund_job` | `POST /v1/jobs/:id/fund` | Sensitive; `jobs:fund`, idempotency, and spending policy required |
 | `assign_agent` | `POST /v1/jobs/:id/assign` | Scoped, idempotent chain write |
+| `cancel_job` | `POST /v1/jobs/:id/cancel` | Buyer/operator only; funded jobs execute a resumable escrow refund |
 | `submit_result` | `POST /v1/jobs/:id/submissions` | Assigned provider credential required |
 | `verify_result` | `POST /v1/jobs/:id/verify` | May incur configured 0G Compute cost; provider cannot self-pass |
 | `settle_job` | `POST /v1/jobs/:id/settle` | Anchors outcome, pays/refunds, writes reputation, and publishes receipt when configured |
@@ -33,7 +34,7 @@ The transport is stateless and JSON-response based. It validates the `Host` head
 
 `settle_job` is intentionally exposed in addition to the minimum product tool list because the complete agreement-to-receipt workflow would otherwise be impossible through MCP.
 
-`discover_agents`, `cancel_job`, and `get_agent_reputation` are not registered yet. Their real domain models and REST operations are still pending; the MCP server does not advertise fake tools or duplicate business logic.
+`discover_agents` and `get_agent_reputation` are not registered yet. Their real query models and REST operations are still pending; the MCP server does not advertise fake tools or duplicate business logic.
 
 ## Configuration
 
@@ -53,4 +54,4 @@ Start the API and MCP workspaces with `pnpm dev`, or run `pnpm --filter @agentcl
 
 ## Verification
 
-`apps/mcp/test/mcp.integration.test.ts` starts the real Node HTTP transport and uses the official SDK `Client` with `StreamableHTTPClientTransport` to initialize, list tools, and invoke a tool. It also proves stable upstream scope errors, missing-auth rejection, and Origin rejection. The controlled backend in that protocol test is explicitly a fixture; REST/domain end-to-end behavior remains covered by the API/PostgreSQL/Anvil integration suite.
+`apps/mcp/test/mcp.integration.test.ts` starts the real Node HTTP transport and uses the official SDK `Client` with `StreamableHTTPClientTransport` to initialize, list tools, and invoke read and cancellation tools. It also proves stable upstream scope errors, missing-auth rejection, and Origin rejection. The controlled backend in that protocol test is explicitly a fixture; the API/PostgreSQL/Anvil suite proves the forwarded funded cancellation changes real escrow state.

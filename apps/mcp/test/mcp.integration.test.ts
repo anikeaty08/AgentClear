@@ -50,6 +50,7 @@ describe('AgentClear MCP Streamable HTTP', () => {
       'list_jobs',
       'fund_job',
       'assign_agent',
+      'cancel_job',
       'submit_result',
       'verify_result',
       'settle_job',
@@ -59,8 +60,25 @@ describe('AgentClear MCP Streamable HTTP', () => {
     const result = await client.callTool({ name: 'get_job', arguments: { jobId } });
     expect(result.isError).not.toBe(true);
     expect(result.structuredContent).toEqual({ data: { job: { id: jobId, state: 'FUNDED' } } });
+    const cancelled = await client.callTool({
+      name: 'cancel_job',
+      arguments: {
+        jobId,
+        cancellation: { reason: 'No provider was assigned.' },
+        idempotencyKey: 'cancel-mcp-test-001',
+      },
+    });
+    expect(cancelled.isError).not.toBe(true);
     expect(tokens.every((token) => token === apiKey)).toBe(true);
-    expect(calls).toEqual([{ method: 'GET', path: `/v1/jobs/${jobId}` }]);
+    expect(calls).toEqual([
+      { method: 'GET', path: `/v1/jobs/${jobId}` },
+      {
+        method: 'POST',
+        path: `/v1/jobs/${jobId}/cancel`,
+        body: { reason: 'No provider was assigned.' },
+        idempotencyKey: 'cancel-mcp-test-001',
+      },
+    ]);
   });
 
   it('returns a stable MCP tool error for an upstream authorization failure', async () => {

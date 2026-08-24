@@ -11,6 +11,7 @@ import {
   PostgresApiKeyRepository,
   PostgresExclusiveExecutor,
   PostgresAssignmentRepository,
+  PostgresJobClosureRepository,
   PostgresEscrowRepository,
   PostgresJobRepository,
   PostgresSubmissionRepository,
@@ -25,6 +26,7 @@ import {
   AssignmentService,
   FundingService,
   JobService,
+  JobClosureService,
   SubmissionQueryService,
   SubmissionService,
   VerificationQueryService,
@@ -130,6 +132,12 @@ const assignmentService =
         gateway: chain,
         executor: chainWriteExecutor,
       });
+const closureService = new JobClosureService({
+  jobRepository,
+  closureRepository: new PostgresJobClosureRepository(database.db),
+  ...(chain === undefined ? {} : { gateway: chain }),
+  executor: chainWriteExecutor,
+});
 const storage =
   config.storage === undefined
     ? undefined
@@ -263,6 +271,7 @@ const app = await buildApp({
   jobService,
   jobRepository,
   authenticator,
+  closureService,
   submissionQueryService: new SubmissionQueryService(jobRepository, submissionRepository),
   verificationQueryService: new VerificationQueryService(jobRepository, verificationRepository),
   ...(fundingService === undefined ? {} : { fundingService }),

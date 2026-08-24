@@ -12,6 +12,7 @@ import {
 import {
   createDatabaseClient,
   PostgresAssignmentRepository,
+  PostgresJobClosureRepository,
   PostgresEscrowRepository,
   PostgresJobRepository,
   PostgresReceiptRepository,
@@ -26,6 +27,7 @@ import {
   FundingService,
   InMemoryExclusiveExecutor,
   JobService,
+  JobClosureService,
   ReceiptService,
   ReputationService,
   SpendingPolicyService,
@@ -45,6 +47,7 @@ import { sql } from 'drizzle-orm';
 import {
   bytesToHex,
   createPublicClient,
+  createTestClient,
   createWalletClient,
   defineChain,
   http,
@@ -243,10 +246,12 @@ describe.skipIf(databaseUrl === undefined)('AgentClear funding API with PostgreS
   let anvil: ChildProcess | undefined;
   let app: Awaited<ReturnType<typeof buildApp>>;
   let publicClient: ReturnType<typeof createPublicClient>;
+  let testClient: ReturnType<typeof createTestClient>;
   let gateway: ViemJobEscrowGateway;
   let outcomeGateway: ViemOutcomeRegistryGateway;
   let reputationGateway: ViemErc8004ReputationGateway;
   let providerAddress: Address;
+  let closureNow = new Date();
   const evidenceStorage = new IntegrationEvidenceStorage();
   const controlledAiVerifier = new ControlledIntegrationAiVerifier();
   const controlledSandboxVerifier = new ControlledIntegrationSandboxVerifier();
@@ -282,6 +287,7 @@ describe.skipIf(databaseUrl === undefined)('AgentClear funding API with PostgreS
     });
     const transport = http(rpcUrl);
     publicClient = createPublicClient({ chain, transport });
+    testClient = createTestClient({ mode: 'anvil', chain, transport });
     const unlockedWallet = createWalletClient({ chain, transport });
     const [deployer, provider] = await unlockedWallet.getAddresses();
     if (deployer === undefined || provider === undefined) {
@@ -444,6 +450,13 @@ describe.skipIf(databaseUrl === undefined)('AgentClear funding API with PostgreS
         spendingAuthorizer: spendingPolicyRepository,
         executor: chainWriteExecutor,
       }),
+      closureService: new JobClosureService({
+        jobRepository,
+        closureRepository: new PostgresJobClosureRepository(database.db),
+        gateway,
+        executor: chainWriteExecutor,
+        clock: () => closureNow,
+      }),
       spendingPolicyService,
       assignmentService: new AssignmentService({
         jobRepository,
@@ -474,11 +487,12 @@ describe.skipIf(databaseUrl === undefined)('AgentClear funding API with PostgreS
   });
 
   beforeEach(async () => {
+    closureNow = new Date();
     evidenceStorage.reset();
     controlledAiVerifier.reset();
     controlledSandboxVerifier.reset();
     await database.db.execute(
-      sql`truncate table funding_authorizations, spending_policies, receipts, receipt_operations, reputation_events, reputation_operations, settlements, refunds, settlement_operations, verification_reports, verification_checks, verification_runs, verification_operations, submission_artifacts, submissions, submission_operations, job_assignment_operations, job_assignments, escrow_funding_operations, escrows, idempotency_records, job_state_events, job_requirements, jobs`,
+      sql`truncate table funding_authorizations, spending_policies, receipts, receipt_operations, reputation_events, reputation_operations, settlements, refunds, settlement_operations, verification_reports, verification_checks, verification_runs, verification_operations, submission_artifacts, submissions, submission_operations, job_closure_operations, job_assignment_operations, job_assignments, escrow_funding_operations, escrows, idempotency_records, job_state_events, job_requirements, jobs`,
     );
     await spendingPolicyService.putPolicy(
       'operator_funding_it',
@@ -1260,5 +1274,173 @@ describe.skipIf(databaseUrl === undefined)('AgentClear funding API with PostgreS
       promptHash: expect.stringMatching(/^0x[0-9a-f]{64}$/),
       runs: '0',
     });
+  });
+
+  it('cancels a funded unassigned job through the real escrow and safely replays', async () => {
+    const authorization = `Bearer ${apiKey}`;
+    const created = await app.inject({
+      method: 'POST',
+      url: '/v1/jobs',
+      headers: { authorization, 'idempotency-key': randomUUID() },
+      payload: {
+        buyerAgentId: 'erc8004:31337:123',
+        title: 'Cancel an unassigned funded job',
+        description: 'Exercise the durable buyer cancellation and escrow refund path.',
+        budget: { token: 'native', maxAmount: '0.1' },
+        deadline: '2030-08-23T16:00:00.000Z',
+        deliverable: { type: 'data', format: 'application/json' },
+        verification: {
+          mode: 'ai',
+          minimumScore: 0.9,
+          requirements: ['Return the requested result.'],
+          rubric: {
+            criteria: [
+              { id: 'quality', description: 'The result is correct.', weightBps: 10_000 },
+            ],
+          },
+        },
+        refundPolicy: { onExpiry: true, onFinalFailure: true },
+      },
+    });
+    expect(created.statusCode, created.body).toBe(201);
+    const jobId = created.json().data.job.id as string;
+    expect((await app.inject({
+      method: 'POST',
+      url: `/v1/jobs/${jobId}/quote`,
+      headers: { authorization, 'idempotency-key': randomUUID() },
+    })).statusCode).toBe(200);
+    expect((await app.inject({
+      method: 'POST',
+      url: `/v1/jobs/${jobId}/fund`,
+      headers: { authorization, 'idempotency-key': randomUUID() },
+      payload: {},
+    })).statusCode).toBe(200);
+
+    const cancellationKey = randomUUID();
+    const cancelled = await app.inject({
+      method: 'POST',
+      url: `/v1/jobs/${jobId}/cancel`,
+      headers: { authorization, 'idempotency-key': cancellationKey },
+      payload: { reason: 'Buyer no longer requires the unassigned task.' },
+    });
+    const replayed = await app.inject({
+      method: 'POST',
+      url: `/v1/jobs/${jobId}/cancel`,
+      headers: { authorization, 'idempotency-key': cancellationKey },
+      payload: { reason: 'Buyer no longer requires the unassigned task.' },
+    });
+
+    expect(cancelled.statusCode, cancelled.body).toBe(200);
+    expect(cancelled.json().data).toMatchObject({
+      job: { state: 'CANCELLED' },
+      closure: {
+        kind: 'CANCEL',
+        status: 'CONFIRMED',
+        chainId,
+        contractAddress: gateway.contractAddress,
+        transactionHash: expect.stringMatching(/^0x[0-9a-f]{64}$/),
+        blockNumber: expect.any(String),
+      },
+    });
+    expect(replayed.statusCode, replayed.body).toBe(200);
+    expect(replayed.headers['idempotency-replayed']).toBe('true');
+    const escrow = await gateway.getEscrow(jobId);
+    expect(escrow).toMatchObject({ state: 4, provider: null, amountBaseUnits: parseEther('0.1').toString() });
+    const persisted = await database.db.execute<{ operations: string; events: string }>(sql`
+      select
+        (select count(*)::text from job_closure_operations where job_id = ${jobId} and status = 'CONFIRMED') as operations,
+        (select count(*)::text from job_state_events where job_id = ${jobId} and to_state = 'CANCELLED') as events
+    `);
+    expect(persisted.rows[0]).toEqual({ operations: '1', events: '1' });
+  });
+
+  it('expires a funded job only after the deadline and refunds the real escrow', async () => {
+    const snapshotId = await testClient.snapshot();
+    try {
+      const authorization = `Bearer ${apiKey}`;
+      const deadline = new Date(Date.now() + 60 * 60 * 1_000);
+      const created = await app.inject({
+        method: 'POST',
+        url: '/v1/jobs',
+        headers: { authorization, 'idempotency-key': randomUUID() },
+        payload: {
+          buyerAgentId: 'erc8004:31337:123',
+          title: 'Expire a funded job',
+          description: 'Exercise the frozen deadline and on-chain expiry refund path.',
+          budget: { token: 'native', maxAmount: '0.1' },
+          deadline: deadline.toISOString(),
+          deliverable: { type: 'research', format: 'application/json' },
+          verification: {
+            mode: 'ai',
+            minimumScore: 0.9,
+            requirements: ['Return the requested research.'],
+            rubric: {
+              criteria: [
+                { id: 'quality', description: 'The research is correct.', weightBps: 10_000 },
+              ],
+            },
+          },
+          refundPolicy: { onExpiry: true, onFinalFailure: true },
+        },
+      });
+      expect(created.statusCode, created.body).toBe(201);
+      const jobId = created.json().data.job.id as string;
+      expect((await app.inject({
+        method: 'POST',
+        url: `/v1/jobs/${jobId}/quote`,
+        headers: { authorization, 'idempotency-key': randomUUID() },
+      })).statusCode).toBe(200);
+      expect((await app.inject({
+        method: 'POST',
+        url: `/v1/jobs/${jobId}/fund`,
+        headers: { authorization, 'idempotency-key': randomUUID() },
+        payload: {},
+      })).statusCode).toBe(200);
+
+      const premature = await app.inject({
+        method: 'POST',
+        url: `/v1/jobs/${jobId}/expire`,
+        headers: { authorization, 'idempotency-key': randomUUID() },
+        payload: {},
+      });
+      expect(premature.statusCode, premature.body).toBe(409);
+      expect(premature.json().error.code).toBe('JOB_NOT_EXPIRED');
+
+      await testClient.increaseTime({ seconds: 2 * 60 * 60 });
+      await testClient.mine({ blocks: 1 });
+      closureNow = new Date(deadline.getTime() + 1_000);
+      const expiryKey = randomUUID();
+      const expired = await app.inject({
+        method: 'POST',
+        url: `/v1/jobs/${jobId}/expire`,
+        headers: { authorization, 'idempotency-key': expiryKey },
+        payload: { reason: 'The frozen deadline passed without a final outcome.' },
+      });
+      const replayed = await app.inject({
+        method: 'POST',
+        url: `/v1/jobs/${jobId}/expire`,
+        headers: { authorization, 'idempotency-key': expiryKey },
+        payload: { reason: 'The frozen deadline passed without a final outcome.' },
+      });
+
+      expect(expired.statusCode, expired.body).toBe(200);
+      expect(expired.json().data).toMatchObject({
+        job: { state: 'REFUNDED' },
+        closure: { kind: 'EXPIRE', status: 'CONFIRMED', chainId },
+      });
+      expect(replayed.statusCode, replayed.body).toBe(200);
+      expect(replayed.headers['idempotency-replayed']).toBe('true');
+      expect(await gateway.getEscrow(jobId)).toMatchObject({ state: 4 });
+      const events = await database.db.execute<{ expired: string; refunded: string }>(sql`
+        select
+          count(*) filter (where to_state = 'EXPIRED')::text as expired,
+          count(*) filter (where to_state = 'REFUNDED')::text as refunded
+        from job_state_events
+        where job_id = ${jobId}
+      `);
+      expect(events.rows[0]).toEqual({ expired: '1', refunded: '1' });
+    } finally {
+      await testClient.revert({ id: snapshotId });
+    }
   });
 });

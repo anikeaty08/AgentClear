@@ -6,6 +6,7 @@ import type {
   AssignmentService,
   FundingService,
   JobRepository,
+  JobClosureService,
   JobService,
   SubmissionQueryService,
   SubmissionService,
@@ -82,6 +83,7 @@ export type BuildAppOptions = {
   jobRepository: JobRepository;
   authenticator: Authenticator;
   fundingService?: FundingService;
+  closureService?: JobClosureService;
   assignmentService?: AssignmentService;
   submissionService?: SubmissionService;
   submissionQueryService: SubmissionQueryService;
@@ -264,6 +266,68 @@ export async function buildApp(options: BuildAppOptions) {
             transactionHash: operation.transactionHash,
             blockNumber: operation.blockNumber,
           },
+        },
+        meta: { requestId: request.id, replayed: result.replayed },
+      });
+  });
+
+  app.post('/v1/jobs/:id/cancel', async (request, reply) => {
+    const principal = requireScope(request, 'jobs:cancel');
+    const idempotencyKey = idempotencyKeySchema.parse(request.headers['idempotency-key']);
+    const { id } = jobIdParamsSchema.parse(request.params);
+    if (options.closureService === undefined) {
+      throw new ApiError('JOB_CLOSURE_UNAVAILABLE', 'Job cancellation is not configured.', 503);
+    }
+    const result = await options.closureService.cancelJob(id, request.body, {
+      actor: { type: principal.kind === 'agent' ? 'agent' : 'operator', id: principal.id },
+      idempotencyKey,
+    });
+    return reply
+      .header('idempotency-replayed', result.replayed ? 'true' : 'false')
+      .send({
+        data: {
+          job: result.job,
+          closure: result.operation === null
+            ? null
+            : {
+                kind: result.operation.kind,
+                status: result.operation.status,
+                chainId: result.operation.chainId,
+                contractAddress: result.operation.contractAddress,
+                transactionHash: result.operation.transactionHash,
+                blockNumber: result.operation.blockNumber,
+              },
+        },
+        meta: { requestId: request.id, replayed: result.replayed },
+      });
+  });
+
+  app.post('/v1/jobs/:id/expire', async (request, reply) => {
+    const principal = requireScope(request, 'jobs:cancel');
+    const idempotencyKey = idempotencyKeySchema.parse(request.headers['idempotency-key']);
+    const { id } = jobIdParamsSchema.parse(request.params);
+    if (options.closureService === undefined) {
+      throw new ApiError('JOB_CLOSURE_UNAVAILABLE', 'Job expiry processing is not configured.', 503);
+    }
+    const result = await options.closureService.expireJob(id, request.body, {
+      actor: { type: principal.kind === 'agent' ? 'agent' : 'operator', id: principal.id },
+      idempotencyKey,
+    });
+    return reply
+      .header('idempotency-replayed', result.replayed ? 'true' : 'false')
+      .send({
+        data: {
+          job: result.job,
+          closure: result.operation === null
+            ? null
+            : {
+                kind: result.operation.kind,
+                status: result.operation.status,
+                chainId: result.operation.chainId,
+                contractAddress: result.operation.contractAddress,
+                transactionHash: result.operation.transactionHash,
+                blockNumber: result.operation.blockNumber,
+              },
         },
         meta: { requestId: request.id, replayed: result.replayed },
       });

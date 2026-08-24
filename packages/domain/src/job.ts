@@ -195,7 +195,7 @@ export const createJobInputSchema = z
     verification: verificationSchema,
     refundPolicy: z
       .object({
-        onExpiry: z.boolean(),
+        onExpiry: z.literal(true),
         onFinalFailure: z.boolean(),
       })
       .strict(),

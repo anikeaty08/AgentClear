@@ -8,6 +8,11 @@ export type DomainErrorCode =
   | 'JOB_DEADLINE_NOT_FUTURE'
   | 'JOB_NOT_FOUND'
   | 'JOB_FUNDING_IN_PROGRESS'
+  | 'JOB_CLOSURE_IN_PROGRESS'
+  | 'JOB_CANCELLATION_FORBIDDEN'
+  | 'JOB_NOT_EXPIRED'
+  | 'JOB_EXPIRY_REFUND_DISABLED'
+  | 'CHAIN_UNAVAILABLE'
   | 'CHAIN_OPERATION_FAILED'
   | 'CHAIN_SIGNER_BUSY'
   | 'SPENDING_POLICY_EXCEEDED'
@@ -115,6 +120,52 @@ export class JobFundingInProgressError extends DomainError {
       'JOB_FUNDING_IN_PROGRESS',
       `Job ${jobId} already has a funding operation in progress.`,
       409,
+    );
+  }
+}
+
+export class JobClosureInProgressError extends DomainError {
+  public constructor(jobId: string) {
+    super(
+      'JOB_CLOSURE_IN_PROGRESS',
+      `Job ${jobId} already has a cancellation or expiry operation in progress.`,
+      409,
+    );
+  }
+}
+
+export class JobCancellationForbiddenError extends DomainError {
+  public constructor() {
+    super(
+      'JOB_CANCELLATION_FORBIDDEN',
+      'Only the buyer agent or an authorized operator may cancel this job.',
+      403,
+    );
+  }
+}
+
+export class JobNotExpiredError extends DomainError {
+  public constructor() {
+    super('JOB_NOT_EXPIRED', 'The job deadline has not passed.', 409);
+  }
+}
+
+export class JobExpiryRefundDisabledError extends DomainError {
+  public constructor() {
+    super(
+      'JOB_EXPIRY_REFUND_DISABLED',
+      'The frozen agreement does not authorize an expiry refund.',
+      409,
+    );
+  }
+}
+
+export class ChainUnavailableError extends DomainError {
+  public constructor() {
+    super(
+      'CHAIN_UNAVAILABLE',
+      'The chain integration is not configured for this operation.',
+      503,
     );
   }
 }

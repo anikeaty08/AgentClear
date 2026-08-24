@@ -8,7 +8,7 @@
 - Key delegation cannot exceed the caller's own scopes. Non-operator key managers are confined to their exact principal; operators can issue agent/service credentials for onboarding and revoke them without deleting audit metadata.
 - Authorization headers are redacted from structured logs.
 - Environment configuration is validated at startup; obvious placeholder secrets are rejected in production.
-- Mutating job operations require a scoped idempotency key; funding, provider assignment, submission, verification, settlement, reputation, and receipt publication additionally require separate purpose-specific scopes.
+- Mutating job operations require a scoped idempotency key; funding, provider assignment, cancellation/expiry, submission, verification, settlement, reputation, and receipt publication additionally require separate purpose-specific scopes.
 - Zod rejects malformed or unknown request fields at the HTTP boundary.
 - PostgreSQL writes the agreement, requirements, initial event, and idempotency claim in one transaction.
 - Rate limiting is applied globally by Fastify.
@@ -21,6 +21,7 @@
 - A signed funding payload is persisted before broadcast, never returned by REST, and cleared after confirmation.
 - Receipt confirmation is followed by contract-state attestation before the database marks a job funded.
 - Assignment rejects the buyer identity, constrains preselected providers, rejects a zero payment address, persists before broadcast, and attests the escrow provider before marking a job assigned.
+- Agent cancellation requires the exact buyer identity and stops at provider assignment. Funded cancellation and deadline expiry persist the exact signed refund before broadcast, attest the escrow's refunded state, clear the payload after confirmation, and preserve transaction-backed state events. New agreements require the same expiry-refund policy enforced by the escrow contract.
 - A PostgreSQL session advisory lock spans funding, assignment, Storage, verification, outcome anchoring, escrow finalization, reputation, and receipt publication. Repository transaction locks and cross-operation active checks prevent another instance or a post-restart request from consuming the shared signer nonce while work is unresolved.
 - The temporary provider credential is distinct from the operator credential and can submit only for its exact configured agent identity; operators cannot impersonate an assigned provider through the submission endpoint.
 - Submission manifests are size-bounded, committed before upload, proof-downloaded, and byte-compared before the job reaches `SUBMITTED`. Confirmed operation payloads are cleared from PostgreSQL.

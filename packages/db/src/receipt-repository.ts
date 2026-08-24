@@ -23,6 +23,7 @@ import {
   escrowFundingOperations,
   idempotencyRecords,
   jobAssignmentOperations,
+  jobClosureOperations,
   jobs,
   receiptOperations,
   receipts,
@@ -332,6 +333,10 @@ export class PostgresReceiptRepository implements ReceiptRepository {
         .from(receiptOperations)
         .where(ne(receiptOperations.status, 'CONFIRMED'))
         .limit(1);
+      const [activeClosure] = await transaction.select({ id: jobClosureOperations.id })
+        .from(jobClosureOperations)
+        .where(inArray(jobClosureOperations.status, ['CREATED', 'PREPARED', 'BROADCAST']))
+        .limit(1);
       if (
         activeFunding !== undefined
         || activeAssignment !== undefined
@@ -340,6 +345,7 @@ export class PostgresReceiptRepository implements ReceiptRepository {
         || activeSettlement !== undefined
         || activeReputation !== undefined
         || activeReceipt !== undefined
+        || activeClosure !== undefined
       ) throw new ChainSignerBusyError();
       const [inserted] = await transaction.insert(receiptOperations).values({
         id: input.operation.id,

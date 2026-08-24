@@ -3,6 +3,8 @@ import type {
   AuthScope,
   DeliverableType,
   FundingAuthorizationStatus,
+  JobClosureKind,
+  JobClosureOperationStatus,
   JobAgreement,
   JobState,
   JsonValue,
@@ -60,6 +62,13 @@ export const escrowStatusEnum = pgEnum('escrow_status', [
   'FAILED',
 ]);
 export const fundingOperationStatusEnum = pgEnum('funding_operation_status', [
+  'CREATED',
+  'PREPARED',
+  'BROADCAST',
+  'CONFIRMED',
+]);
+export const jobClosureKindEnum = pgEnum('job_closure_kind', ['CANCEL', 'EXPIRE']);
+export const jobClosureOperationStatusEnum = pgEnum('job_closure_operation_status', [
   'CREATED',
   'PREPARED',
   'BROADCAST',
@@ -133,6 +142,7 @@ export const jobs = pgTable(
     index('jobs_buyer_agent_created_at_idx').on(table.buyerAgentId, table.createdAt),
     index('jobs_provider_agent_state_idx').on(table.providerAgentId, table.state),
     unique('jobs_agreement_hash_unique').on(table.agreementHash),
+    check('jobs_refund_on_expiry_required_check', sql`${table.refundOnExpiry} = true`),
   ],
 );
 
@@ -220,7 +230,7 @@ export const apiKeys = pgTable(
     check('api_keys_scopes_not_empty_check', sql`cardinality(${table.scopes}) > 0`),
     check(
       'api_keys_scope_values_check',
-      sql`${table.scopes} <@ array['jobs:read','jobs:write','jobs:fund','jobs:assign','jobs:submit','jobs:verify','jobs:settle','jobs:reputation','jobs:receipt','api-keys:manage','spending-policies:manage']::text[]`,
+      sql`${table.scopes} <@ array['jobs:read','jobs:write','jobs:fund','jobs:assign','jobs:cancel','jobs:submit','jobs:verify','jobs:settle','jobs:reputation','jobs:receipt','api-keys:manage','spending-policies:manage']::text[]`,
     ),
     check(
       'api_keys_expiry_after_creation_check',
@@ -415,6 +425,56 @@ export const jobAssignmentOperations = pgTable(
       .on(table.jobId)
       .where(sql`${table.status} in ('CREATED', 'PREPARED', 'BROADCAST')`),
     index('job_assignment_operations_status_updated_at_idx').on(table.status, table.updatedAt),
+  ],
+);
+
+export const jobClosureOperations = pgTable(
+  'job_closure_operations',
+  {
+    id: uuid('id').primaryKey(),
+    jobId: uuid('job_id')
+      .notNull()
+      .references(() => jobs.id, { onDelete: 'restrict' }),
+    kind: jobClosureKindEnum('kind').$type<JobClosureKind>().notNull(),
+    initialState: jobStateEnum('initial_state').$type<JobState>().notNull(),
+    status: jobClosureOperationStatusEnum('status').$type<JobClosureOperationStatus>().notNull(),
+    actorType: jobActorTypeEnum('actor_type').notNull(),
+    actorId: text('actor_id').notNull(),
+    reason: text('reason').notNull(),
+    chainId: integer('chain_id').notNull(),
+    contractAddress: varchar('contract_address', { length: 42 }).notNull(),
+    signerAddress: varchar('signer_address', { length: 42 }).notNull(),
+    amountBaseUnits: numeric('amount_base_units', { precision: 78, scale: 0 }).notNull(),
+    jobKey: varchar('job_key', { length: 66 }),
+    serializedTransaction: text('serialized_transaction'),
+    transactionHash: varchar('transaction_hash', { length: 66 }),
+    blockNumber: numeric('block_number', { precision: 78, scale: 0 }),
+    idempotencyScope: varchar('idempotency_scope', { length: 255 }).notNull(),
+    idempotencyKey: varchar('idempotency_key', { length: 255 }).notNull(),
+    requestHash: varchar('request_hash', { length: 66 }).notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull(),
+  },
+  (table) => [
+    unique('job_closure_operations_idempotency_unique').on(
+      table.idempotencyScope,
+      table.idempotencyKey,
+    ),
+    unique('job_closure_operations_transaction_hash_unique').on(table.transactionHash),
+    uniqueIndex('job_closure_operations_active_job_unique')
+      .on(table.jobId)
+      .where(sql`${table.status} in ('CREATED', 'PREPARED', 'BROADCAST')`),
+    index('job_closure_operations_status_updated_at_idx').on(table.status, table.updatedAt),
+    check('job_closure_operations_amount_positive_check', sql`${table.amountBaseUnits} > 0`),
+    check('job_closure_operations_reason_not_blank_check', sql`length(btrim(${table.reason})) > 0`),
+    check(
+      'job_closure_operations_initial_state_check',
+      sql`(${table.kind} = 'CANCEL' and ${table.initialState} = 'FUNDED') or (${table.kind} = 'EXPIRE' and ${table.initialState} in ('FUNDED','OPEN','ASSIGNED','IN_PROGRESS','RETRY'))`,
+    ),
+    check(
+      'job_closure_operations_state_fields_check',
+      sql`(${table.status} = 'CREATED' and ${table.jobKey} is null and ${table.serializedTransaction} is null and ${table.transactionHash} is null and ${table.blockNumber} is null) or (${table.status} = 'PREPARED' and ${table.jobKey} is not null and ${table.serializedTransaction} is not null and ${table.transactionHash} is not null and ${table.blockNumber} is null) or (${table.status} = 'BROADCAST' and ${table.jobKey} is not null and ${table.serializedTransaction} is not null and ${table.transactionHash} is not null and ${table.blockNumber} is null) or (${table.status} = 'CONFIRMED' and ${table.jobKey} is not null and ${table.serializedTransaction} is null and ${table.transactionHash} is not null and ${table.blockNumber} is not null)`,
+    ),
   ],
 );
 
@@ -800,6 +860,7 @@ export const databaseSchema = {
   escrowFundingOperations,
   jobAssignments,
   jobAssignmentOperations,
+  jobClosureOperations,
   submissionOperations,
   submissions,
   submissionArtifacts,

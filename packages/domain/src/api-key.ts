@@ -14,6 +14,7 @@ export const AUTH_SCOPES = [
   'jobs:read',
   'jobs:write',
   'jobs:fund',
+  'jobs:cancel',
   'jobs:assign',
   'jobs:submit',
   'jobs:verify',

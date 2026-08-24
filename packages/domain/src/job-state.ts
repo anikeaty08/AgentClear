@@ -24,7 +24,7 @@ export const JOB_STATES = [
 export type JobState = (typeof JOB_STATES)[number];
 
 const allowedTransitions = {
-  DRAFT: ['QUOTED', 'CANCELLED'],
+  DRAFT: ['QUOTED', 'CANCELLED', 'EXPIRED'],
   QUOTED: ['FUNDED', 'CANCELLED', 'EXPIRED'],
   FUNDED: ['OPEN', 'CANCELLED', 'EXPIRED'],
   OPEN: ['ASSIGNED', 'CANCELLED', 'EXPIRED'],
@@ -55,4 +55,3 @@ export function canTransitionJob(from: JobState, to: JobState): boolean {
 export function getAllowedJobTransitions(from: JobState): readonly JobState[] {
   return allowedTransitions[from];
 }
-

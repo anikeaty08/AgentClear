@@ -1,5 +1,6 @@
 import {
   assignProviderInputSchema,
+  closeJobInputSchema,
   createJobInputSchema,
   JOB_STATES,
   type JsonValue,
@@ -187,6 +188,37 @@ export function createAgentClearMcpServer(backend: AgentClearBackend): McpServer
           method: 'POST',
           path: `/v1/jobs/${jobId}/assign`,
           body: assignment,
+          idempotencyKey,
+        }),
+      ),
+  );
+
+  server.registerTool(
+    'cancel_job',
+    {
+      title: 'Cancel AgentClear job',
+      description:
+        'Cancel before provider assignment. A funded job is refunded through the configured escrow contract.',
+      inputSchema: z
+        .object({
+          jobId: jobIdSchema,
+          cancellation: closeJobInputSchema.default({}),
+          idempotencyKey: idempotencyKeySchema,
+        })
+        .strict(),
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
+    },
+    async ({ jobId, cancellation, idempotencyKey }) =>
+      runTool(() =>
+        backend.call({
+          method: 'POST',
+          path: `/v1/jobs/${jobId}/cancel`,
+          body: cancellation,
           idempotencyKey,
         }),
       ),

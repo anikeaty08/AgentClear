@@ -77,6 +77,12 @@ export type FinalizeEscrowCommand = {
   verificationReportHash: Hex;
 };
 
+export type CloseEscrowCommand = {
+  jobId: string;
+  agreementHash: Hex;
+  amountBaseUnits: string;
+};
+
 export type FinalizeEscrowResult = ConfirmedChainWrite & {
   escrow: EscrowRecord;
 };
@@ -459,6 +465,32 @@ export class ViemJobEscrowGateway {
     return this.getEscrowByKey(jobIdToEscrowKey(jobId));
   }
 
+  public async prepareCancelUnassigned(
+    command: CloseEscrowCommand,
+  ): Promise<PreparedFundingTransaction> {
+    return this.prepareClosure(command, 'cancelUnassigned');
+  }
+
+  public async prepareExpiredRefund(
+    command: CloseEscrowCommand,
+  ): Promise<PreparedFundingTransaction> {
+    return this.prepareClosure(command, 'refundExpired');
+  }
+
+  public async confirmCancelUnassigned(
+    command: CloseEscrowCommand,
+    prepared: PreparedFundingTransaction,
+  ): Promise<FinalizeEscrowResult> {
+    return this.confirmClosure(command, prepared, true);
+  }
+
+  public async confirmExpiredRefund(
+    command: CloseEscrowCommand,
+    prepared: PreparedFundingTransaction,
+  ): Promise<FinalizeEscrowResult> {
+    return this.confirmClosure(command, prepared, false);
+  }
+
   public async prepareSettle(
     command: FinalizeEscrowCommand,
   ): Promise<PreparedFundingTransaction> {
@@ -519,6 +551,41 @@ export class ViemJobEscrowGateway {
     };
   }
 
+  async prepareClosure(
+    command: CloseEscrowCommand,
+    functionName: 'cancelUnassigned' | 'refundExpired',
+  ): Promise<PreparedFundingTransaction> {
+    requireBytes32(command.agreementHash, 'agreementHash');
+    parseAmount(command.amountBaseUnits);
+    if (typeof this.#options.account === 'string') {
+      throw new ChainConfigurationError('Durable job closure requires a local signer account.');
+    }
+    const jobKey = jobIdToEscrowKey(command.jobId);
+    const args = [jobKey] as const;
+    const { publicClient, walletClient } = this.#clients();
+    await publicClient.simulateContract({
+      account: this.#options.account,
+      address: this.#options.contractAddress,
+      abi: jobEscrowAbi,
+      functionName,
+      args,
+    });
+    const data = encodeFunctionData({ abi: jobEscrowAbi, functionName, args });
+    const request = await walletClient.prepareTransactionRequest({
+      account: this.#options.account,
+      to: this.#options.contractAddress,
+      data,
+    });
+    const serializedTransaction = await walletClient.signTransaction(request);
+    return {
+      jobKey,
+      transactionHash: keccak256(serializedTransaction),
+      serializedTransaction,
+      contractAddress: this.#options.contractAddress,
+      signerAddress: this.signerAddress,
+    };
+  }
+
   async confirmFinalization(
     command: FinalizeEscrowCommand,
     prepared: PreparedFundingTransaction,
@@ -537,6 +604,41 @@ export class ViemJobEscrowGateway {
     const escrow = await this.getEscrowByKey(jobKey);
     if (escrow.state !== expectedState) {
       throw new EscrowAttestationError('Confirmed settlement has an unexpected escrow state.');
+    }
+    return {
+      transactionHash: prepared.transactionHash,
+      blockNumber: receipt.blockNumber.toString(),
+      contractAddress: this.#options.contractAddress,
+      escrow,
+    };
+  }
+
+  async confirmClosure(
+    command: CloseEscrowCommand,
+    prepared: PreparedFundingTransaction,
+    requireUnassigned: boolean,
+  ): Promise<FinalizeEscrowResult> {
+    requireBytes32(command.agreementHash, 'agreementHash');
+    const expectedAmount = parseAmount(command.amountBaseUnits).toString();
+    const jobKey = jobIdToEscrowKey(command.jobId);
+    if (prepared.jobKey !== jobKey || prepared.signerAddress !== this.signerAddress) {
+      throw new ChainConfigurationError('Prepared transaction does not match this job closure.');
+    }
+    const { publicClient } = this.#clients();
+    const receipt = await publicClient.waitForTransactionReceipt({
+      hash: prepared.transactionHash,
+      confirmations: this.#options.confirmations ?? 1,
+    });
+    if (receipt.status !== 'success') throw new ChainTransactionRevertedError(prepared.transactionHash);
+    const escrow = await this.getEscrowByKey(jobKey);
+    if (
+      escrow.state !== ESCROW_STATE.REFUNDED
+      || escrow.buyer !== this.signerAddress
+      || escrow.amountBaseUnits !== expectedAmount
+      || escrow.agreementHash.toLowerCase() !== command.agreementHash.toLowerCase()
+      || (requireUnassigned && escrow.provider !== null)
+    ) {
+      throw new EscrowAttestationError('Confirmed job closure has an unexpected escrow state.');
     }
     return {
       transactionHash: prepared.transactionHash,
