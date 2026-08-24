@@ -1,6 +1,8 @@
 import type {
   AuthPrincipalKind,
   AuthScope,
+  DeliverableType,
+  FundingAuthorizationStatus,
   JobAgreement,
   JobState,
   JsonValue,
@@ -43,6 +45,11 @@ export const apiKeyPrincipalKindEnum = pgEnum('api_key_principal_kind', [
   'operator',
   'agent',
   'service',
+]);
+export const fundingAuthorizationStatusEnum = pgEnum('funding_authorization_status', [
+  'PENDING_APPROVAL',
+  'AUTHORIZED',
+  'EXPIRED',
 ]);
 export const escrowStatusEnum = pgEnum('escrow_status', [
   'PENDING',
@@ -213,11 +220,88 @@ export const apiKeys = pgTable(
     check('api_keys_scopes_not_empty_check', sql`cardinality(${table.scopes}) > 0`),
     check(
       'api_keys_scope_values_check',
-      sql`${table.scopes} <@ array['jobs:read','jobs:write','jobs:fund','jobs:assign','jobs:submit','jobs:verify','jobs:settle','jobs:reputation','jobs:receipt','api-keys:manage']::text[]`,
+      sql`${table.scopes} <@ array['jobs:read','jobs:write','jobs:fund','jobs:assign','jobs:submit','jobs:verify','jobs:settle','jobs:reputation','jobs:receipt','api-keys:manage','spending-policies:manage']::text[]`,
     ),
     check(
       'api_keys_expiry_after_creation_check',
       sql`${table.expiresAt} is null or ${table.expiresAt} > ${table.createdAt}`,
+    ),
+  ],
+);
+
+export const spendingPolicies = pgTable(
+  'spending_policies',
+  {
+    principalId: text('principal_id').primaryKey(),
+    principalKind: apiKeyPrincipalKindEnum('principal_kind').$type<AuthPrincipalKind>().notNull(),
+    maxPerJobBaseUnits: numeric('max_per_job_base_units', { precision: 78, scale: 0 }).notNull(),
+    maxPerDayBaseUnits: numeric('max_per_day_base_units', { precision: 78, scale: 0 }).notNull(),
+    maxPerMonthBaseUnits: numeric('max_per_month_base_units', { precision: 78, scale: 0 }).notNull(),
+    allowedCapabilities: text('allowed_capabilities').array().$type<DeliverableType[]>().notNull(),
+    requireHumanApprovalAboveBaseUnits: numeric('require_human_approval_above_base_units', {
+      precision: 78,
+      scale: 0,
+    }),
+    createdBy: text('created_by').notNull(),
+    updatedBy: text('updated_by').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull(),
+  },
+  (table) => [
+    check(
+      'spending_policies_principal_format_check',
+      sql`length(${table.principalId}) between 1 and 200 and ${table.principalId} ~ '^[A-Za-z0-9._:-]+$'`,
+    ),
+    check(
+      'spending_policies_agent_identity_check',
+      sql`${table.principalKind} <> 'agent' or ${table.principalId} ~ '^erc8004:[0-9]+:[0-9]+$'`,
+    ),
+    check(
+      'spending_policies_limits_check',
+      sql`${table.maxPerJobBaseUnits} > 0 and ${table.maxPerJobBaseUnits} <= ${table.maxPerDayBaseUnits} and ${table.maxPerDayBaseUnits} <= ${table.maxPerMonthBaseUnits}`,
+    ),
+    check(
+      'spending_policies_capabilities_check',
+      sql`cardinality(${table.allowedCapabilities}) > 0 and ${table.allowedCapabilities} <@ array['code','data','research','content','other']::text[]`,
+    ),
+    check(
+      'spending_policies_approval_threshold_check',
+      sql`${table.requireHumanApprovalAboveBaseUnits} is null or (${table.requireHumanApprovalAboveBaseUnits} >= 0 and ${table.requireHumanApprovalAboveBaseUnits} <= ${table.maxPerJobBaseUnits})`,
+    ),
+  ],
+);
+
+export const fundingAuthorizations = pgTable(
+  'funding_authorizations',
+  {
+    jobId: uuid('job_id')
+      .primaryKey()
+      .references(() => jobs.id, { onDelete: 'restrict' }),
+    principalId: text('principal_id')
+      .notNull()
+      .references(() => spendingPolicies.principalId, { onDelete: 'restrict' }),
+    amountBaseUnits: numeric('amount_base_units', { precision: 78, scale: 0 }).notNull(),
+    capability: varchar('capability', { length: 32 }).$type<DeliverableType>().notNull(),
+    status: fundingAuthorizationStatusEnum('status').$type<FundingAuthorizationStatus>().notNull(),
+    reservedAt: timestamp('reserved_at', { withTimezone: true, mode: 'date' }).notNull(),
+    approvalExpiresAt: timestamp('approval_expires_at', { withTimezone: true, mode: 'date' }),
+    approvedBy: text('approved_by'),
+    approvedAt: timestamp('approved_at', { withTimezone: true, mode: 'date' }),
+  },
+  (table) => [
+    index('funding_authorizations_principal_reserved_idx').on(
+      table.principalId,
+      table.reservedAt,
+    ),
+    index('funding_authorizations_pending_expiry_idx').on(table.status, table.approvalExpiresAt),
+    check('funding_authorizations_amount_check', sql`${table.amountBaseUnits} > 0`),
+    check(
+      'funding_authorizations_capability_check',
+      sql`${table.capability} in ('code','data','research','content','other')`,
+    ),
+    check(
+      'funding_authorizations_state_fields_check',
+      sql`(${table.status} = 'PENDING_APPROVAL' and ${table.approvalExpiresAt} is not null and ${table.approvalExpiresAt} > ${table.reservedAt} and ${table.approvedBy} is null and ${table.approvedAt} is null) or (${table.status} = 'AUTHORIZED' and ${table.approvalExpiresAt} is null and ((${table.approvedBy} is null and ${table.approvedAt} is null) or (${table.approvedBy} is not null and ${table.approvedAt} is not null))) or (${table.status} = 'EXPIRED' and ${table.approvalExpiresAt} is not null and ${table.approvedBy} is null and ${table.approvedAt} is null)`,
     ),
   ],
 );
@@ -706,6 +790,8 @@ export const receipts = pgTable(
 
 export const databaseSchema = {
   apiKeys,
+  spendingPolicies,
+  fundingAuthorizations,
   jobs,
   jobRequirements,
   jobStateEvents,

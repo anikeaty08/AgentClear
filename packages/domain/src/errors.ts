@@ -11,6 +11,9 @@ export type DomainErrorCode =
   | 'CHAIN_OPERATION_FAILED'
   | 'CHAIN_SIGNER_BUSY'
   | 'SPENDING_POLICY_EXCEEDED'
+  | 'SPENDING_POLICY_NOT_CONFIGURED'
+  | 'SPENDING_APPROVAL_REQUIRED'
+  | 'SPENDING_AUTHORIZATION_CONFLICT'
   | 'JOB_ASSIGNMENT_IN_PROGRESS'
   | 'PROVIDER_MISMATCH'
   | 'PROVIDER_NOT_AUTHORIZED'
@@ -140,8 +143,38 @@ export class SpendingPolicyExceededError extends DomainError {
   public constructor() {
     super(
       'SPENDING_POLICY_EXCEEDED',
-      'The job budget exceeds the configured per-job spending limit.',
+      'The job exceeds its configured spending or capability policy.',
       403,
+    );
+  }
+}
+
+export class SpendingPolicyNotConfiguredError extends DomainError {
+  public constructor() {
+    super(
+      'SPENDING_POLICY_NOT_CONFIGURED',
+      'The authenticated principal has no funding policy.',
+      403,
+    );
+  }
+}
+
+export class SpendingApprovalRequiredError extends DomainError {
+  public constructor() {
+    super(
+      'SPENDING_APPROVAL_REQUIRED',
+      'This funding amount requires operator approval before it can be signed.',
+      409,
+    );
+  }
+}
+
+export class SpendingAuthorizationConflictError extends DomainError {
+  public constructor() {
+    super(
+      'SPENDING_AUTHORIZATION_CONFLICT',
+      'The job already has a different funding authorization.',
+      409,
     );
   }
 }

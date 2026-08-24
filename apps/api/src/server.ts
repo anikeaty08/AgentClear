@@ -18,6 +18,7 @@ import {
   PostgresSettlementRepository,
   PostgresReputationRepository,
   PostgresReceiptRepository,
+  PostgresSpendingPolicyRepository,
 } from '@agentclear/db';
 import {
   ApiKeyService,
@@ -31,6 +32,7 @@ import {
   SettlementService,
   ReputationService,
   ReceiptService,
+  SpendingPolicyService,
 } from '@agentclear/domain';
 import { ZeroGStorageClient } from '@agentclear/storage';
 import { DockerSandboxVerifier, createWslDockerSandbox } from '@agentclear/sandbox';
@@ -50,6 +52,8 @@ const apiKeyService = new ApiKeyService({
   repository: new PostgresApiKeyRepository(database.db),
   pepper: config.auth.apiKeyPepper,
 });
+const spendingPolicyRepository = new PostgresSpendingPolicyRepository(database.db);
+const spendingPolicyService = new SpendingPolicyService({ repository: spendingPolicyRepository });
 const chain =
   config.chain === undefined
     ? undefined
@@ -114,6 +118,7 @@ const fundingService =
         escrowRepository: new PostgresEscrowRepository(database.db),
         gateway: chain,
         maxPerJobBaseUnits: config.chain.maxPerJobBaseUnits,
+        spendingAuthorizer: spendingPolicyRepository,
         executor: chainWriteExecutor,
       });
 const assignmentService =
@@ -254,6 +259,7 @@ const authenticator = new CompositeAuthenticator(authenticators);
 
 const app = await buildApp({
   apiKeyService,
+  spendingPolicyService,
   jobService,
   jobRepository,
   authenticator,

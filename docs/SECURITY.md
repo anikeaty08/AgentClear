@@ -16,7 +16,8 @@
 - Raw stack traces are not returned to clients.
 - `.env`, private-key, and PEM files are ignored by Git.
 - The chain signer is optional, server-only configuration. Funding is disabled unless the full chain configuration validates.
-- Funding enforces a configured integer base-unit maximum per job before signing.
+- Funding fails closed without a durable policy for the authenticated principal. A PostgreSQL advisory lock serializes per-principal authorization, and capability plus integer per-job/current-UTC-day/current-UTC-month limits are checked before transaction preparation or signing. Authorized and unexpired approval-pending reservations count against the aggregates; the configured server-wide maximum remains a second ceiling.
+- Policy creation/read and high-value funding approval are operator-only and require `spending-policies:manage`. Approval thresholds create 24-hour reservations, expose no signer material, and recheck the current policy and aggregate limits before authorization.
 - A signed funding payload is persisted before broadcast, never returned by REST, and cleared after confirmation.
 - Receipt confirmation is followed by contract-state attestation before the database marks a job funded.
 - Assignment rejects the buyer identity, constrains preselected providers, rejects a zero payment address, persists before broadcast, and attests the escrow provider before marking a job assigned.
@@ -38,6 +39,6 @@
 
 ## Not yet implemented
 
-Organization membership/roles, provider identity-to-payment-address binding during assignment, daily/monthly spending limits, webhook signing, admin authorization, dedicated/rootless sandbox worker deployment with hardened seccomp/AppArmor and image scanning, hardened signer custody, encryption at rest for pending signed transactions/evidence payloads, DNS-rebinding-resistant Compute endpoint pinning, provider-side paid-call reconciliation, and automated stale-operation reconciliation remain release blockers. The bootstrap operator key remains a recovery/onboarding credential and should not be used as an everyday runtime key.
+Organization membership/roles, provider identity-to-payment-address binding during assignment, webhook signing, admin authorization, dedicated/rootless sandbox worker deployment with hardened seccomp/AppArmor and image scanning, hardened signer custody, encryption at rest for pending signed transactions/evidence payloads, DNS-rebinding-resistant Compute endpoint pinning, provider-side paid-call reconciliation, and automated stale-operation/released-spend reconciliation remain release blockers. Funding reservations deliberately remain fail-safe after an ambiguous chain failure and age out of the daily/monthly windows; an automated reconciler should eventually release demonstrably unused authorizations sooner. The bootstrap operator key remains a recovery/onboarding credential and should not be used as an everyday runtime key.
 
 The local/API chain path accepts a signer key only from server environment configuration. It must never be placed in frontend code, logs, API bodies, or MCP tool arguments. The checked `.env.example` contains blank placeholders only.

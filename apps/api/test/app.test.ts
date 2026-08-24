@@ -167,6 +167,7 @@ const authenticator: Authenticator = {
             'jobs:reputation',
             'jobs:receipt',
             'api-keys:manage',
+            'spending-policies:manage',
           ]),
         }
       : null;

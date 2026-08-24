@@ -16,6 +16,7 @@ import {
   PostgresJobRepository,
   PostgresReceiptRepository,
   PostgresReputationRepository,
+  PostgresSpendingPolicyRepository,
   PostgresSubmissionRepository,
   PostgresVerificationRepository,
   PostgresSettlementRepository,
@@ -27,6 +28,7 @@ import {
   JobService,
   ReceiptService,
   ReputationService,
+  SpendingPolicyService,
   SubmissionQueryService,
   SubmissionService,
   VerificationQueryService,
@@ -232,6 +234,10 @@ class ControlledIntegrationSandboxVerifier implements SandboxVerifier {
 
 describe.skipIf(databaseUrl === undefined)('AgentClear funding API with PostgreSQL and Anvil', () => {
   const database = createDatabaseClient(databaseUrl!);
+  const spendingPolicyRepository = new PostgresSpendingPolicyRepository(database.db);
+  const spendingPolicyService = new SpendingPolicyService({
+    repository: spendingPolicyRepository,
+  });
   const apiKey = 'funding-integration-api-key-at-least-32-chars';
   const providerApiKey = 'provider-integration-api-key-at-least-32-chars';
   let anvil: ChildProcess | undefined;
@@ -435,8 +441,10 @@ describe.skipIf(databaseUrl === undefined)('AgentClear funding API with PostgreS
         escrowRepository: new PostgresEscrowRepository(database.db),
         gateway,
         maxPerJobBaseUnits: parseEther('1').toString(),
+        spendingAuthorizer: spendingPolicyRepository,
         executor: chainWriteExecutor,
       }),
+      spendingPolicyService,
       assignmentService: new AssignmentService({
         jobRepository,
         assignmentRepository: new PostgresAssignmentRepository(database.db),
@@ -470,7 +478,23 @@ describe.skipIf(databaseUrl === undefined)('AgentClear funding API with PostgreS
     controlledAiVerifier.reset();
     controlledSandboxVerifier.reset();
     await database.db.execute(
-      sql`truncate table receipts, receipt_operations, reputation_events, reputation_operations, settlements, refunds, settlement_operations, verification_reports, verification_checks, verification_runs, verification_operations, submission_artifacts, submissions, submission_operations, job_assignment_operations, job_assignments, escrow_funding_operations, escrows, idempotency_records, job_state_events, job_requirements, jobs`,
+      sql`truncate table funding_authorizations, spending_policies, receipts, receipt_operations, reputation_events, reputation_operations, settlements, refunds, settlement_operations, verification_reports, verification_checks, verification_runs, verification_operations, submission_artifacts, submissions, submission_operations, job_assignment_operations, job_assignments, escrow_funding_operations, escrows, idempotency_records, job_state_events, job_requirements, jobs`,
+    );
+    await spendingPolicyService.putPolicy(
+      'operator_funding_it',
+      {
+        principalKind: 'operator',
+        maxPerJobBaseUnits: parseEther('1').toString(),
+        maxPerDayBaseUnits: parseEther('2').toString(),
+        maxPerMonthBaseUnits: parseEther('10').toString(),
+        allowedCapabilities: ['code', 'data', 'research'],
+        requireHumanApprovalAboveBaseUnits: null,
+      },
+      {
+        id: 'operator_funding_it',
+        kind: 'operator',
+        scopes: new Set(['spending-policies:manage']),
+      },
     );
   });
 

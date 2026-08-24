@@ -34,6 +34,23 @@ The `201` response uses `Cache-Control: no-store` and returns the plaintext `dat
 
 `DELETE /v1/api-keys/:id` requires `api-keys:manage`, records an idempotent revocation timestamp, and never deletes audit metadata or returns a secret. A revoked or expired key is rejected on its next request.
 
+## Manage spending policies
+
+`PUT /v1/spending-policies/:principalId` and `GET /v1/spending-policies/:principalId` require `spending-policies:manage` and an authenticated operator. An agent or service cannot raise its own limits even if its key was mistakenly granted that scope. Agent principal IDs must use the canonical `erc8004:<chainId>:<tokenId>` form.
+
+```json
+{
+  "principalKind": "operator",
+  "maxPerJobBaseUnits": "1000000000000000000",
+  "maxPerDayBaseUnits": "5000000000000000000",
+  "maxPerMonthBaseUnits": "25000000000000000000",
+  "allowedCapabilities": ["code", "research"],
+  "requireHumanApprovalAboveBaseUnits": "500000000000000000"
+}
+```
+
+Limits are positive integer native-token base-unit strings and must satisfy per-job <= per-day <= per-month. The optional approval threshold may be `null`; otherwise it cannot exceed the per-job limit. Capabilities are the canonical deliverable types `code`, `data`, `research`, `content`, and `other`.
+
 ## Create a job
 
 `POST /v1/jobs` requires `jobs:write`.
@@ -87,7 +104,11 @@ Success returns `201` with `data.job`. Exact replay returns the original job and
 
 `POST /v1/jobs/:id/fund` requires `jobs:fund`, an idempotency key, and complete server-side chain configuration.
 
-The body must be an empty object. The current REST workflow deliberately funds an unassigned escrow and assigns the provider through the separately authorized endpoint below. The server enforces its configured per-job spending ceiling, persists the exact signed transaction before broadcast, waits for confirmation, reads the contract state, and only then transitions `QUOTED` to `FUNDED`.
+The body must be an empty object. The current REST workflow deliberately funds an unassigned escrow and assigns the provider through the separately authorized endpoint below. Before transaction preparation, the server requires a policy for the authenticated principal and atomically checks deliverable capability plus per-job, current UTC day, and current UTC month limits. Authorized and unexpired approval-pending reservations count against the aggregate limits. The configured server-wide per-job ceiling remains an additional hard cap.
+
+If the amount exceeds `requireHumanApprovalAboveBaseUnits`, funding returns `SPENDING_APPROVAL_REQUIRED` without preparing or signing a transaction. An operator can authorize that existing reservation through `POST /v1/jobs/:id/funding-approval` with `spending-policies:manage` and an empty body, then the original principal retries `fund` with the same idempotency key. Approval rechecks the current policy and aggregate limits; approvals expire after 24 hours. A missing policy or exceeded capability/limit fails closed before signing.
+
+After authorization, the server persists the exact signed transaction before broadcast, waits for confirmation, reads the contract state, and only then transitions `QUOTED` to `FUNDED`.
 
 The response exposes the contract address, signer address, amount, transaction hash, block number, and confirmed status. It never exposes the serialized signed transaction or signer key. A retry must use the same idempotency key so an interrupted operation rebroadcasts the same transaction hash.
 
@@ -175,4 +196,4 @@ When both reputation and Storage are configured, the same request then publishes
 }
 ```
 
-Stable codes currently include `AUTHENTICATION_REQUIRED`, `INSUFFICIENT_SCOPE`, `API_KEY_MANAGEMENT_UNAVAILABLE`, `API_KEY_NOT_FOUND`, `API_KEY_PERMISSION_DENIED`, `API_KEY_SCOPE_ESCALATION`, `API_KEY_EXPIRY_INVALID`, `INVALID_REQUEST`, `RATE_LIMIT_EXCEEDED`, `JOB_NOT_FOUND`, `JOB_DEADLINE_NOT_FUTURE`, `INVALID_JOB_TRANSITION`, `IDEMPOTENCY_KEY_REUSED`, `CHAIN_UNAVAILABLE`, `CHAIN_OPERATION_FAILED`, `CHAIN_SIGNER_BUSY`, `JOB_FUNDING_IN_PROGRESS`, `JOB_ASSIGNMENT_IN_PROGRESS`, `PROVIDER_MISMATCH`, `PROVIDER_NOT_AUTHORIZED`, `SUBMISSION_IN_PROGRESS`, `SUBMISSION_TOO_LARGE`, `VERIFICATION_IN_PROGRESS`, `VERIFICATION_POLICY_UNSUPPORTED`, `COMPUTE_UNAVAILABLE`, `COMPUTE_OPERATION_FAILED`, `COMPUTE_RECONCILIATION_REQUIRED`, `SANDBOX_UNAVAILABLE`, `SANDBOX_EXECUTION_FAILED`, `EVIDENCE_INTEGRITY_FAILED`, `SETTLEMENT_IN_PROGRESS`, `JOB_NOT_SETTLEABLE`, `REPUTATION_IN_PROGRESS`, `JOB_NOT_REPUTABLE`, `RECEIPT_IN_PROGRESS`, `JOB_NOT_RECEIPTABLE`, `RECEIPT_NOT_FOUND`, `RECEIPT_TOO_LARGE`, `RECEIPT_INTEGRITY_FAILED`, `STORAGE_UNAVAILABLE`, `STORAGE_OPERATION_FAILED`, `SPENDING_POLICY_EXCEEDED`, and `INTERNAL_ERROR`.
+Stable codes currently include `AUTHENTICATION_REQUIRED`, `INSUFFICIENT_SCOPE`, `API_KEY_MANAGEMENT_UNAVAILABLE`, `API_KEY_NOT_FOUND`, `API_KEY_PERMISSION_DENIED`, `API_KEY_SCOPE_ESCALATION`, `API_KEY_EXPIRY_INVALID`, `INVALID_REQUEST`, `RATE_LIMIT_EXCEEDED`, `JOB_NOT_FOUND`, `JOB_DEADLINE_NOT_FUTURE`, `INVALID_JOB_TRANSITION`, `IDEMPOTENCY_KEY_REUSED`, `CHAIN_UNAVAILABLE`, `CHAIN_OPERATION_FAILED`, `CHAIN_SIGNER_BUSY`, `JOB_FUNDING_IN_PROGRESS`, `JOB_ASSIGNMENT_IN_PROGRESS`, `PROVIDER_MISMATCH`, `PROVIDER_NOT_AUTHORIZED`, `SUBMISSION_IN_PROGRESS`, `SUBMISSION_TOO_LARGE`, `VERIFICATION_IN_PROGRESS`, `VERIFICATION_POLICY_UNSUPPORTED`, `COMPUTE_UNAVAILABLE`, `COMPUTE_OPERATION_FAILED`, `COMPUTE_RECONCILIATION_REQUIRED`, `SANDBOX_UNAVAILABLE`, `SANDBOX_EXECUTION_FAILED`, `EVIDENCE_INTEGRITY_FAILED`, `SETTLEMENT_IN_PROGRESS`, `JOB_NOT_SETTLEABLE`, `REPUTATION_IN_PROGRESS`, `JOB_NOT_REPUTABLE`, `RECEIPT_IN_PROGRESS`, `JOB_NOT_RECEIPTABLE`, `RECEIPT_NOT_FOUND`, `RECEIPT_TOO_LARGE`, `RECEIPT_INTEGRITY_FAILED`, `STORAGE_UNAVAILABLE`, `STORAGE_OPERATION_FAILED`, `SPENDING_POLICY_UNAVAILABLE`, `SPENDING_POLICY_NOT_FOUND`, `SPENDING_POLICY_NOT_CONFIGURED`, `SPENDING_POLICY_EXCEEDED`, `SPENDING_APPROVAL_REQUIRED`, `SPENDING_AUTHORIZATION_CONFLICT`, and `INTERNAL_ERROR`.

@@ -5,7 +5,10 @@ import {
   FundingService,
   IdempotencyKeyReusedError,
   InvalidJobTransitionError,
+  SpendingApprovalRequiredError,
+  SpendingAuthorizationConflictError,
   SpendingPolicyExceededError,
+  SpendingPolicyNotConfiguredError,
   type BeginFundingInput,
   type BeginFundingResult,
   type ConfirmFundingPersistenceInput,
@@ -13,9 +16,11 @@ import {
   type EscrowGateway,
   type EscrowRepository,
   type FundingOperation,
+  type FundingAuthorizationDecision,
   type Job,
   type JobRepository,
   type PreparedFundingTransaction,
+  type SpendingAuthorizer,
   type TransitionJobPersistenceResult,
 } from '../src/index.js';
 
@@ -183,15 +188,20 @@ class MemoryEscrowGateway implements EscrowGateway {
   }
 }
 
-function createService(maxPerJobBaseUnits = '5000000000000000000') {
+function createService(
+  maxPerJobBaseUnits = '5000000000000000000',
+  spendingAuthorizer?: SpendingAuthorizer,
+  job: Job = quotedJob,
+) {
   const gateway = new MemoryEscrowGateway();
-  const escrowRepository = new MemoryEscrowRepository(quotedJob);
+  const escrowRepository = new MemoryEscrowRepository(job);
   let id = 0;
   const service = new FundingService({
-    jobRepository: new FundingJobRepository(quotedJob),
+    jobRepository: new FundingJobRepository(job),
     escrowRepository,
     gateway,
     maxPerJobBaseUnits,
+    ...(spendingAuthorizer === undefined ? {} : { spendingAuthorizer }),
     clock: () => new Date('2026-08-23T00:00:02.000Z'),
     idGenerator: () => `0198d462-75c0-7000-8000-${String(++id).padStart(12, '0')}`,
   });
@@ -253,6 +263,98 @@ describe('FundingService', () => {
         context,
       ),
     ).rejects.toMatchObject({ name: 'ZodError' });
+    expect(gateway.prepareCalls).toBe(0);
+  });
+
+  it.each([
+    ['POLICY_NOT_FOUND', SpendingPolicyNotConfiguredError],
+    ['APPROVAL_REQUIRED', SpendingApprovalRequiredError],
+    ['LIMIT_EXCEEDED', SpendingPolicyExceededError],
+    ['CONFLICT', SpendingAuthorizationConflictError],
+  ] as const)('blocks signing when spending authorization returns %s', async (outcome, ErrorType) => {
+    const spendingAuthorizer: SpendingAuthorizer = {
+      async authorizeFunding(input) {
+        const decision: FundingAuthorizationDecision = outcome === 'APPROVAL_REQUIRED'
+          ? {
+              outcome,
+              authorization: {
+                jobId: input.jobId,
+                principalId: input.principalId,
+                amountBaseUnits: input.amountBaseUnits,
+                capability: input.capability,
+                status: 'PENDING_APPROVAL',
+                reservedAt: input.requestedAt,
+                approvalExpiresAt: input.approvalExpiresAt,
+                approvedBy: null,
+                approvedAt: null,
+              },
+            }
+          : { outcome };
+        return decision;
+      },
+    };
+    const { service, gateway } = createService('5000000000000000000', spendingAuthorizer);
+
+    await expect(service.fundJob(quotedJob.id, {}, context)).rejects.toBeInstanceOf(ErrorType);
+    expect(gateway.prepareCalls).toBe(0);
+  });
+
+  it('passes the frozen job amount and capability to the spending authorizer', async () => {
+    const calls: unknown[] = [];
+    const spendingAuthorizer: SpendingAuthorizer = {
+      async authorizeFunding(input) {
+        calls.push(input);
+        return {
+          outcome: 'AUTHORIZED',
+          authorization: {
+            jobId: input.jobId,
+            principalId: input.principalId,
+            amountBaseUnits: input.amountBaseUnits,
+            capability: input.capability,
+            status: 'AUTHORIZED',
+            reservedAt: input.requestedAt,
+            approvalExpiresAt: null,
+            approvedBy: null,
+            approvedAt: null,
+          },
+        };
+      },
+    };
+    const { service, gateway } = createService('5000000000000000000', spendingAuthorizer);
+
+    await service.fundJob(quotedJob.id, {}, context);
+    expect(calls).toEqual([
+      {
+        jobId: quotedJob.id,
+        principalId: context.actor.id,
+        amountBaseUnits: quotedJob.budgetAmountBaseUnits,
+        capability: 'code',
+        requestedAt: '2026-08-23T00:00:02.000Z',
+        approvalExpiresAt: '2026-08-24T00:00:02.000Z',
+      },
+    ]);
+    expect(gateway.prepareCalls).toBe(1);
+  });
+
+  it('does not reserve spending capacity for a job that is not fundable', async () => {
+    let authorizationCalls = 0;
+    const spendingAuthorizer: SpendingAuthorizer = {
+      async authorizeFunding() {
+        authorizationCalls += 1;
+        return { outcome: 'POLICY_NOT_FOUND' };
+      },
+    };
+    const draftJob: Job = { ...quotedJob, state: 'DRAFT' };
+    const { service, gateway } = createService(
+      '5000000000000000000',
+      spendingAuthorizer,
+      draftJob,
+    );
+
+    await expect(service.fundJob(draftJob.id, {}, context)).rejects.toBeInstanceOf(
+      InvalidJobTransitionError,
+    );
+    expect(authorizationCalls).toBe(0);
     expect(gateway.prepareCalls).toBe(0);
   });
 });

@@ -12,6 +12,7 @@ import type {
   VerificationQueryService,
   VerificationService,
   SettlementService,
+  SpendingPolicyService,
   ReputationService,
   ReceiptService,
   ReceiptRecord,
@@ -31,6 +32,9 @@ declare module 'fastify' {
 
 const idempotencyKeySchema = z.string().min(8).max(255).regex(/^[A-Za-z0-9._:-]+$/);
 const jobIdParamsSchema = z.object({ id: z.uuid() }).strict();
+const principalIdParamsSchema = z
+  .object({ principalId: z.string().min(1).max(200).regex(/^[A-Za-z0-9._:-]+$/) })
+  .strict();
 
 function publicReceipt(record: ReceiptRecord) {
   return {
@@ -86,6 +90,7 @@ export type BuildAppOptions = {
   settlementService?: SettlementService;
   reputationService?: ReputationService;
   receiptService?: ReceiptService;
+  spendingPolicyService?: SpendingPolicyService;
   chainHealth?: () => Promise<unknown>;
   storageHealth?: () => Promise<unknown>;
   computeHealth?: () => Promise<unknown>;
@@ -575,6 +580,56 @@ export async function buildApp(options: BuildAppOptions) {
     const { id } = jobIdParamsSchema.parse(request.params);
     const apiKey = await options.apiKeyService.revokeKey(id, principal);
     return { data: { apiKey }, meta: { requestId: request.id } };
+  });
+
+  app.put('/v1/spending-policies/:principalId', async (request) => {
+    const principal = requireScope(request, 'spending-policies:manage');
+    if (options.spendingPolicyService === undefined) {
+      throw new ApiError(
+        'SPENDING_POLICY_UNAVAILABLE',
+        'Durable spending policy management is not configured.',
+        503,
+      );
+    }
+    const { principalId } = principalIdParamsSchema.parse(request.params);
+    const policy = await options.spendingPolicyService.putPolicy(
+      principalId,
+      request.body,
+      principal,
+    );
+    return { data: { policy }, meta: { requestId: request.id } };
+  });
+
+  app.get('/v1/spending-policies/:principalId', async (request) => {
+    const principal = requireScope(request, 'spending-policies:manage');
+    if (options.spendingPolicyService === undefined) {
+      throw new ApiError(
+        'SPENDING_POLICY_UNAVAILABLE',
+        'Durable spending policy management is not configured.',
+        503,
+      );
+    }
+    const { principalId } = principalIdParamsSchema.parse(request.params);
+    const policy = await options.spendingPolicyService.getPolicy(principalId, principal);
+    if (policy === null) {
+      throw new ApiError('SPENDING_POLICY_NOT_FOUND', 'The spending policy was not found.', 404);
+    }
+    return { data: { policy }, meta: { requestId: request.id } };
+  });
+
+  app.post('/v1/jobs/:id/funding-approval', async (request) => {
+    const principal = requireScope(request, 'spending-policies:manage');
+    if (options.spendingPolicyService === undefined) {
+      throw new ApiError(
+        'SPENDING_POLICY_UNAVAILABLE',
+        'Durable spending policy management is not configured.',
+        503,
+      );
+    }
+    z.object({}).strict().parse(request.body ?? {});
+    const { id } = jobIdParamsSchema.parse(request.params);
+    const authorization = await options.spendingPolicyService.approveFunding(id, principal);
+    return { data: { authorization }, meta: { requestId: request.id } };
   });
 
   return app;

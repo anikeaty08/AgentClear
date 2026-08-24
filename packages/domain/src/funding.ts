@@ -7,11 +7,15 @@ import {
   ChainOperationFailedError,
   DomainError,
   JobNotFoundError,
+  SpendingApprovalRequiredError,
+  SpendingAuthorizationConflictError,
   SpendingPolicyExceededError,
+  SpendingPolicyNotConfiguredError,
 } from './errors.js';
 import type { Job, JobActor, JobStateEvent } from './job.js';
 import type { IdempotencyClaim, JobRepository } from './job-repository.js';
 import { InMemoryExclusiveExecutor, type ExclusiveExecutor } from './exclusive-executor.js';
+import type { SpendingAuthorizer } from './spending-policy.js';
 
 export const fundJobInputSchema = z.object({}).strict();
 
@@ -117,6 +121,7 @@ export type FundingServiceDependencies = {
   escrowRepository: EscrowRepository;
   gateway: EscrowGateway;
   maxPerJobBaseUnits: string;
+  spendingAuthorizer?: SpendingAuthorizer;
   clock?: () => Date;
   idGenerator?: () => string;
   executor?: ExclusiveExecutor;
@@ -133,6 +138,7 @@ export class FundingService {
   readonly #escrowRepository: EscrowRepository;
   readonly #gateway: EscrowGateway;
   readonly #maxPerJobBaseUnits: bigint;
+  readonly #spendingAuthorizer: SpendingAuthorizer | undefined;
   readonly #clock: () => Date;
   readonly #idGenerator: () => string;
   readonly #executor: ExclusiveExecutor;
@@ -142,6 +148,7 @@ export class FundingService {
     this.#escrowRepository = dependencies.escrowRepository;
     this.#gateway = dependencies.gateway;
     this.#maxPerJobBaseUnits = BigInt(dependencies.maxPerJobBaseUnits);
+    this.#spendingAuthorizer = dependencies.spendingAuthorizer;
     this.#clock = dependencies.clock ?? (() => new Date());
     this.#idGenerator = dependencies.idGenerator ?? randomUUID;
     this.#executor = dependencies.executor ?? new InMemoryExclusiveExecutor();
@@ -163,6 +170,28 @@ export class FundingService {
       }
 
       const now = this.#clock();
+      if (job.state === 'QUOTED' && this.#spendingAuthorizer !== undefined) {
+        const decision = await this.#spendingAuthorizer.authorizeFunding({
+          jobId,
+          principalId: context.actor.id,
+          amountBaseUnits: job.budgetAmountBaseUnits,
+          capability: job.agreement.deliverable.type,
+          requestedAt: now.toISOString(),
+          approvalExpiresAt: new Date(now.getTime() + 24 * 60 * 60 * 1_000).toISOString(),
+        });
+        switch (decision.outcome) {
+          case 'AUTHORIZED':
+            break;
+          case 'POLICY_NOT_FOUND':
+            throw new SpendingPolicyNotConfiguredError();
+          case 'APPROVAL_REQUIRED':
+            throw new SpendingApprovalRequiredError();
+          case 'LIMIT_EXCEEDED':
+            throw new SpendingPolicyExceededError();
+          case 'CONFLICT':
+            throw new SpendingAuthorizationConflictError();
+        }
+      }
       const command: FundEscrowCommand = {
         jobId,
         agreementHash: job.agreementHash,

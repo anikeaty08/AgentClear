@@ -170,6 +170,9 @@ const verificationSchema = z
     }
   });
 
+export const DELIVERABLE_TYPES = ['code', 'data', 'research', 'content', 'other'] as const;
+export type DeliverableType = (typeof DELIVERABLE_TYPES)[number];
+
 export const createJobInputSchema = z
   .object({
     buyerAgentId: agentIdSchema,
@@ -185,7 +188,7 @@ export const createJobInputSchema = z
     deadline: z.iso.datetime({ offset: true }),
     deliverable: z
       .object({
-        type: z.enum(['code', 'data', 'research', 'content', 'other']),
+        type: z.enum(DELIVERABLE_TYPES),
         format: z.string().trim().min(1).max(100),
       })
       .strict(),

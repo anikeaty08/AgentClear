@@ -5,12 +5,14 @@ import {
   PostgresApiKeyRepository,
   PostgresJobRepository,
   PostgresSubmissionRepository,
+  PostgresSpendingPolicyRepository,
   PostgresVerificationRepository,
 } from '@agentclear/db';
 import {
   ApiKeyService,
   JobService,
   SubmissionQueryService,
+  SpendingPolicyService,
   VerificationQueryService,
 } from '@agentclear/domain';
 import { sql } from 'drizzle-orm';
@@ -48,6 +50,11 @@ describe.skipIf(databaseUrl === undefined)('AgentClear API with PostgreSQL', () 
   const database = createDatabaseClient(databaseUrl!);
   const repository = new PostgresJobRepository(database.db);
   const keyRepository = new PostgresApiKeyRepository(database.db);
+  const spendingPolicyRepository = new PostgresSpendingPolicyRepository(database.db);
+  const spendingPolicyService = new SpendingPolicyService({
+    repository: spendingPolicyRepository,
+    clock: () => new Date('2026-08-24T12:00:00.000Z'),
+  });
   const keyService = new ApiKeyService({
     repository: keyRepository,
     pepper: 'integration-pepper-with-at-least-32-chars',
@@ -57,6 +64,7 @@ describe.skipIf(databaseUrl === undefined)('AgentClear API with PostgreSQL', () 
   const verificationRepository = new PostgresVerificationRepository(database.db);
   const appPromise = buildApp({
     apiKeyService: keyService,
+    spendingPolicyService,
     jobRepository: repository,
     jobService: new JobService({ repository, listRepository: repository }),
     submissionQueryService: new SubmissionQueryService(repository, submissionRepository),
@@ -73,7 +81,7 @@ describe.skipIf(databaseUrl === undefined)('AgentClear API with PostgreSQL', () 
 
   beforeEach(async () => {
     await database.db.execute(
-      sql`truncate table api_keys, receipts, receipt_operations, reputation_events, reputation_operations, settlements, refunds, settlement_operations, verification_reports, verification_checks, verification_runs, verification_operations, submission_artifacts, submissions, submission_operations, job_assignment_operations, job_assignments, escrow_funding_operations, escrows, idempotency_records, job_state_events, job_requirements, jobs`,
+      sql`truncate table funding_authorizations, spending_policies, api_keys, receipts, receipt_operations, reputation_events, reputation_operations, settlements, refunds, settlement_operations, verification_reports, verification_checks, verification_runs, verification_operations, submission_artifacts, submissions, submission_operations, job_assignment_operations, job_assignments, escrow_funding_operations, escrows, idempotency_records, job_state_events, job_requirements, jobs`,
     );
   });
 
@@ -147,5 +155,62 @@ describe.skipIf(databaseUrl === undefined)('AgentClear API with PostgreSQL', () 
       headers: { authorization: `Bearer ${secret}` },
     });
     expect(rejected.statusCode).toBe(401);
+  });
+
+  it('manages a policy and approves a reserved funding request through REST', async () => {
+    const app = await appPromise;
+    const authorization = { authorization: `Bearer ${apiKey}` };
+    const put = await app.inject({
+      method: 'PUT',
+      url: '/v1/spending-policies/operator_it',
+      headers: authorization,
+      payload: {
+        principalKind: 'operator',
+        maxPerJobBaseUnits: '1000',
+        maxPerDayBaseUnits: '2000',
+        maxPerMonthBaseUnits: '10000',
+        allowedCapabilities: ['code'],
+        requireHumanApprovalAboveBaseUnits: '100',
+      },
+    });
+    expect(put.statusCode).toBe(200);
+
+    const createdJob = await app.inject({
+      method: 'POST',
+      url: '/v1/jobs',
+      headers: { ...authorization, 'idempotency-key': randomUUID() },
+      payload,
+    });
+    const jobId = createdJob.json().data.job.id as string;
+    const pending = await spendingPolicyRepository.authorizeFunding({
+      jobId,
+      principalId: 'operator_it',
+      amountBaseUnits: '200',
+      capability: 'code',
+      requestedAt: '2026-08-24T12:00:00.000Z',
+      approvalExpiresAt: '2026-08-25T12:00:00.000Z',
+    });
+    expect(pending.outcome).toBe('APPROVAL_REQUIRED');
+
+    const approved = await app.inject({
+      method: 'POST',
+      url: `/v1/jobs/${jobId}/funding-approval`,
+      headers: authorization,
+      payload: {},
+    });
+    expect(approved.statusCode).toBe(200);
+    expect(approved.json().data.authorization).toMatchObject({
+      jobId,
+      status: 'AUTHORIZED',
+      approvedBy: 'operator_it',
+    });
+
+    const loaded = await app.inject({
+      method: 'GET',
+      url: '/v1/spending-policies/operator_it',
+      headers: authorization,
+    });
+    expect(loaded.statusCode).toBe(200);
+    expect(loaded.json().data.policy.maxPerDayBaseUnits).toBe('2000');
   });
 });
