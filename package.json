@@ -1,0 +1,30 @@
+{
+  "name": "agentclear",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Verifiable clearing and settlement for AI-agent work on 0G",
+  "packageManager": "pnpm@11.6.0",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "node --env-file-if-exists=.env ./node_modules/turbo/bin/turbo run dev",
+    "lint": "turbo run lint",
+    "typecheck": "turbo run typecheck",
+    "test": "turbo run test",
+    "test:integration": "corepack pnpm db:migrate && node --env-file-if-exists=.env ./node_modules/turbo/bin/turbo run test:integration --concurrency=1",
+    "test:e2e": "turbo run test:e2e",
+    "db:migrate": "node --env-file-if-exists=.env ./node_modules/turbo/bin/turbo run db:migrate --filter=@agentclear/db"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@types/node": "24.13.3",
+    "eslint": "10.9.0",
+    "turbo": "2.10.11",
+    "tsx": "4.23.12",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.67.0",
+    "vitest": "4.1.11"
+  }
+}

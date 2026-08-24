@@ -1,0 +1,69 @@
+{
+  "$schema": "https://turbo.build/schema.json",
+  "tasks": {
+    "build": {
+      "dependsOn": ["^build"],
+      "outputs": ["dist/**", "out/**"]
+    },
+    "dev": {
+      "dependsOn": ["^build"],
+      "cache": false,
+      "persistent": true,
+      "env": [
+        "AGENTCLEAR_API_BASE_URL",
+        "API_HOST",
+        "API_KEY_PEPPER",
+        "API_PORT",
+        "BOOTSTRAP_API_KEY",
+        "BOOTSTRAP_PRINCIPAL_ID",
+        "CHAIN_CONFIRMATIONS",
+        "CHAIN_EXPLORER_URL",
+        "CHAIN_ID",
+        "CHAIN_MAX_PER_JOB_BASE_UNITS",
+        "CHAIN_NAME",
+        "CHAIN_NATIVE_CURRENCY_SYMBOL",
+        "CHAIN_RPC_URL",
+        "CHAIN_SIGNER_PRIVATE_KEY",
+        "DATABASE_URL",
+        "JOB_ESCROW_ADDRESS",
+        "OUTCOME_REGISTRY_ADDRESS",
+        "ERC8004_IDENTITY_REGISTRY_ADDRESS",
+        "ERC8004_REPUTATION_REGISTRY_ADDRESS",
+        "LOG_LEVEL",
+        "MCP_ALLOWED_HOSTS",
+        "MCP_ALLOWED_ORIGINS",
+        "MCP_HOST",
+        "MCP_MAX_BODY_BYTES",
+        "MCP_MAX_RESPONSE_BYTES",
+        "MCP_PORT",
+        "MCP_RATE_LIMIT_PER_MINUTE",
+        "MCP_UPSTREAM_TIMEOUT_MS",
+        "NODE_ENV"
+      ]
+    },
+    "lint": {
+      "dependsOn": ["^build"]
+    },
+    "typecheck": {
+      "dependsOn": ["^build"]
+    },
+    "test": {
+      "dependsOn": ["^build"]
+    },
+    "test:integration": {
+      "dependsOn": ["^build"],
+      "cache": false,
+      "env": ["DATABASE_URL"]
+    },
+    "test:e2e": {
+      "dependsOn": ["build"],
+      "cache": false,
+      "outputs": ["playwright-report/**", "test-results/**"]
+    },
+    "db:migrate": {
+      "dependsOn": ["build"],
+      "cache": false,
+      "env": ["DATABASE_URL"]
+    }
+  }
+}
