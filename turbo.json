@@ -10,6 +10,7 @@
       "cache": false,
       "persistent": true,
       "env": [
+        "AGENTCLEAR_API_BASE_URL",
         "API_HOST",
         "API_KEY_PEPPER",
         "API_PORT",
@@ -29,6 +30,14 @@
         "ERC8004_IDENTITY_REGISTRY_ADDRESS",
         "ERC8004_REPUTATION_REGISTRY_ADDRESS",
         "LOG_LEVEL",
+        "MCP_ALLOWED_HOSTS",
+        "MCP_ALLOWED_ORIGINS",
+        "MCP_HOST",
+        "MCP_MAX_BODY_BYTES",
+        "MCP_MAX_RESPONSE_BYTES",
+        "MCP_PORT",
+        "MCP_RATE_LIMIT_PER_MINUTE",
+        "MCP_UPSTREAM_TIMEOUT_MS",
         "NODE_ENV"
       ]
     },

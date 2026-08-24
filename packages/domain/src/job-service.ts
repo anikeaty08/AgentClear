@@ -1,10 +1,15 @@
 import { randomUUID } from 'node:crypto';
 
+import { z } from 'zod';
+
 import { JobDeadlineNotFutureError, JobNotFoundError } from './errors.js';
-import { sha256Commitment } from './canonical.js';
+import { canonicalJson, sha256Commitment } from './canonical.js';
 import { createJobInputSchema, type CreateJobInput, type Job, type JobActor } from './job.js';
+import { JOB_STATES } from './job-state.js';
 import type {
   CreateJobPersistenceResult,
+  JobListCursor,
+  JobListRepository,
   JobRepository,
   TransitionJobPersistenceResult,
 } from './job-repository.js';
@@ -12,17 +17,40 @@ import { decimalToBaseUnits } from './money.js';
 
 export type JobServiceDependencies = {
   repository: JobRepository;
+  listRepository?: JobListRepository;
   clock?: () => Date;
   idGenerator?: () => string;
 };
 
+const agentIdSchema = z.string().regex(/^erc8004:\d+:\d+$/);
+export const listJobsInputSchema = z
+  .object({
+    state: z.enum(JOB_STATES).optional(),
+    buyerAgentId: agentIdSchema.optional(),
+    providerAgentId: agentIdSchema.optional(),
+    cursor: z.string().min(1).max(512).optional(),
+    limit: z.coerce.number().int().min(1).max(100).default(25),
+  })
+  .strict();
+
+const jobListCursorSchema = z
+  .object({ createdAt: z.iso.datetime({ offset: true }), id: z.uuid() })
+  .strict();
+
+export type ListJobsResult = {
+  jobs: Job[];
+  nextCursor: string | null;
+};
+
 export class JobService {
   readonly #repository: JobRepository;
+  readonly #listRepository: JobListRepository | undefined;
   readonly #clock: () => Date;
   readonly #idGenerator: () => string;
 
   public constructor(dependencies: JobServiceDependencies) {
     this.#repository = dependencies.repository;
+    this.#listRepository = dependencies.listRepository;
     this.#clock = dependencies.clock ?? (() => new Date());
     this.#idGenerator = dependencies.idGenerator ?? randomUUID;
   }
@@ -91,6 +119,30 @@ export class JobService {
     return job;
   }
 
+  public async listJobs(rawInput: unknown): Promise<ListJobsResult> {
+    const input = listJobsInputSchema.parse(rawInput);
+    if (this.#listRepository === undefined) {
+      throw new TypeError('Job listing repository is not configured.');
+    }
+    const cursor = input.cursor === undefined ? undefined : decodeJobCursor(input.cursor);
+    const page = await this.#listRepository.list({
+      ...(input.state === undefined ? {} : { state: input.state }),
+      ...(input.buyerAgentId === undefined ? {} : { buyerAgentId: input.buyerAgentId }),
+      ...(input.providerAgentId === undefined
+        ? {}
+        : { providerAgentId: input.providerAgentId }),
+      ...(cursor === undefined ? {} : { cursor }),
+      limit: input.limit,
+    });
+    const last = page.jobs.at(-1);
+    return {
+      jobs: page.jobs,
+      nextCursor: page.hasMore && last !== undefined
+        ? Buffer.from(canonicalJson({ createdAt: last.createdAt, id: last.id })).toString('base64url')
+        : null,
+    };
+  }
+
   public async quoteJob(
     jobId: string,
     context: { actor: JobActor; idempotencyKey: string },
@@ -119,5 +171,15 @@ export class JobService {
         expiresAt: new Date(now.getTime() + 24 * 60 * 60 * 1_000).toISOString(),
       },
     });
+  }
+}
+
+function decodeJobCursor(value: string): JobListCursor {
+  try {
+    return jobListCursorSchema.parse(
+      JSON.parse(Buffer.from(value, 'base64url').toString('utf8')),
+    );
+  } catch {
+    return jobListCursorSchema.parse(null);
   }
 }

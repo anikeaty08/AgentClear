@@ -10,6 +10,7 @@
 - Zod rejects malformed or unknown request fields at the HTTP boundary.
 - PostgreSQL writes the agreement, requirements, initial event, and idempotency claim in one transaction.
 - Rate limiting is applied globally by Fastify.
+- MCP keeps scoped API keys in the Bearer header, re-authorizes every operation through REST, validates Host and optional Origin, bounds request/upstream-response sizes and time, and applies a bounded in-memory per-source rate limit. Wallet keys are never MCP inputs.
 - Raw stack traces are not returned to clients.
 - `.env`, private-key, and PEM files are ignored by Git.
 - The chain signer is optional, server-only configuration. Funding is disabled unless the full chain configuration validates.

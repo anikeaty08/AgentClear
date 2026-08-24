@@ -33,6 +33,28 @@ export type TransitionJobPersistenceResult = {
   replayed: boolean;
 };
 
+export type JobListCursor = {
+  createdAt: string;
+  id: string;
+};
+
+export type ListJobsPersistenceInput = {
+  state?: JobState;
+  buyerAgentId?: string;
+  providerAgentId?: string;
+  cursor?: JobListCursor;
+  limit: number;
+};
+
+export type ListJobsPersistenceResult = {
+  jobs: Job[];
+  hasMore: boolean;
+};
+
+export interface JobListRepository {
+  list(input: ListJobsPersistenceInput): Promise<ListJobsPersistenceResult>;
+}
+
 export interface JobRepository {
   create(input: CreateJobPersistenceInput): Promise<CreateJobPersistenceResult>;
   findById(jobId: string): Promise<Job | null>;

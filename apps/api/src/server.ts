@@ -39,7 +39,7 @@ import { BootstrapApiKeyAuthenticator, CompositeAuthenticator } from './auth.js'
 const config = loadRuntimeConfig();
 const database = createDatabaseClient(config.databaseUrl);
 const jobRepository = new PostgresJobRepository(database.db);
-const jobService = new JobService({ repository: jobRepository });
+const jobService = new JobService({ repository: jobRepository, listRepository: jobRepository });
 const chain =
   config.chain === undefined
     ? undefined

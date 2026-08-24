@@ -9,6 +9,9 @@ import {
   type CreateJobPersistenceInput,
   type CreateJobPersistenceResult,
   type Job,
+  type JobListRepository,
+  type ListJobsPersistenceInput,
+  type ListJobsPersistenceResult,
   type JobRepository,
   type TransitionJobPersistenceInput,
   type TransitionJobPersistenceResult,
@@ -18,7 +21,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
 import type { Authenticator } from '../src/auth.js';
 
-class MemoryJobRepository implements JobRepository {
+class MemoryJobRepository implements JobRepository, JobListRepository {
   readonly #jobs = new Map<string, Job>();
   readonly #claims = new Map<string, { requestHash: string; resourceId: string }>();
 
@@ -64,6 +67,31 @@ class MemoryJobRepository implements JobRepository {
     this.#claims.set(key, { requestHash: input.idempotency.requestHash, resourceId: input.jobId });
     this.#jobs.set(input.jobId, updated);
     return { job: updated, replayed: false };
+  }
+
+  public async list(input: ListJobsPersistenceInput): Promise<ListJobsPersistenceResult> {
+    const ordered = [...this.#jobs.values()]
+      .filter((job) => input.state === undefined || job.state === input.state)
+      .filter(
+        (job) => input.buyerAgentId === undefined
+          || job.agreement.buyerAgentId === input.buyerAgentId,
+      )
+      .filter(
+        (job) => input.providerAgentId === undefined
+          || job.providerAgentId === input.providerAgentId,
+      )
+      .filter((job) => {
+        if (input.cursor === undefined) return true;
+        return job.createdAt < input.cursor.createdAt
+          || (job.createdAt === input.cursor.createdAt && job.id < input.cursor.id);
+      })
+      .sort((left, right) =>
+        right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id),
+      );
+    return {
+      jobs: ordered.slice(0, input.limit),
+      hasMore: ordered.length > input.limit,
+    };
   }
 
   public async ping(): Promise<void> {}
@@ -129,6 +157,7 @@ async function createTestApp(options: { sandboxHealth?: () => Promise<unknown> }
     jobRepository: repository,
     jobService: new JobService({
       repository,
+      listRepository: repository,
       clock: () => new Date('2026-08-23T00:00:00.000Z'),
     }),
     submissionQueryService: new SubmissionQueryService(repository, submissionRepository),
@@ -217,6 +246,41 @@ describe('AgentClear API', () => {
     expect(replay.statusCode).toBe(201);
     expect(replay.headers['idempotency-replayed']).toBe('true');
     expect(replay.json().data.job.id).toBe(first.json().data.job.id);
+  });
+
+  it('lists jobs with stable cursor pagination through the versioned API', async () => {
+    const app = await createTestApp();
+    for (const idempotencyKey of ['create-list-test-001', 'create-list-test-002']) {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/v1/jobs',
+        headers: {
+          authorization: 'Bearer valid-test-api-key',
+          'idempotency-key': idempotencyKey,
+        },
+        payload: validJob,
+      });
+      expect(response.statusCode).toBe(201);
+    }
+
+    const first = await app.inject({
+      method: 'GET',
+      url: '/v1/jobs?state=DRAFT&limit=1',
+      headers: { authorization: 'Bearer valid-test-api-key' },
+    });
+    expect(first.statusCode).toBe(200);
+    expect(first.json().data.jobs).toHaveLength(1);
+    expect(first.json().data.nextCursor).toEqual(expect.any(String));
+
+    const second = await app.inject({
+      method: 'GET',
+      url: `/v1/jobs?state=DRAFT&limit=1&cursor=${encodeURIComponent(first.json().data.nextCursor)}`,
+      headers: { authorization: 'Bearer valid-test-api-key' },
+    });
+    expect(second.statusCode).toBe(200);
+    expect(second.json().data.jobs).toHaveLength(1);
+    expect(second.json().data.jobs[0].id).not.toBe(first.json().data.jobs[0].id);
+    expect(second.json().data.nextCursor).toBeNull();
   });
 
   it('quotes a draft through the versioned API', async () => {

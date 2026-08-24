@@ -5,11 +5,14 @@ import {
   type CreateJobPersistenceInput,
   type CreateJobPersistenceResult,
   type Job,
+  type JobListRepository,
   type JobRepository,
+  type ListJobsPersistenceInput,
+  type ListJobsPersistenceResult,
   type TransitionJobPersistenceInput,
   type TransitionJobPersistenceResult,
 } from '@agentclear/domain';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, desc, eq, lt, or, sql, type SQL } from 'drizzle-orm';
 
 import type { AgentClearDatabase } from './client.js';
 import { idempotencyRecords, jobRequirements, jobs, jobStateEvents } from './schema.js';
@@ -29,7 +32,7 @@ function rowToJob(row: typeof jobs.$inferSelect): Job {
   };
 }
 
-export class PostgresJobRepository implements JobRepository {
+export class PostgresJobRepository implements JobRepository, JobListRepository {
   public constructor(private readonly database: AgentClearDatabase) {}
 
   public async create(input: CreateJobPersistenceInput): Promise<CreateJobPersistenceResult> {
@@ -128,6 +131,36 @@ export class PostgresJobRepository implements JobRepository {
   public async findById(jobId: string): Promise<Job | null> {
     const [row] = await this.database.select().from(jobs).where(eq(jobs.id, jobId)).limit(1);
     return row === undefined ? null : rowToJob(row);
+  }
+
+  public async list(input: ListJobsPersistenceInput): Promise<ListJobsPersistenceResult> {
+    const conditions: SQL[] = [];
+    if (input.state !== undefined) conditions.push(eq(jobs.state, input.state));
+    if (input.buyerAgentId !== undefined) {
+      conditions.push(eq(jobs.buyerAgentId, input.buyerAgentId));
+    }
+    if (input.providerAgentId !== undefined) {
+      conditions.push(eq(jobs.providerAgentId, input.providerAgentId));
+    }
+    if (input.cursor !== undefined) {
+      const createdAt = new Date(input.cursor.createdAt);
+      conditions.push(
+        or(
+          lt(jobs.createdAt, createdAt),
+          and(eq(jobs.createdAt, createdAt), lt(jobs.id, input.cursor.id)),
+        )!,
+      );
+    }
+    const rows = await this.database
+      .select()
+      .from(jobs)
+      .where(conditions.length === 0 ? undefined : and(...conditions))
+      .orderBy(desc(jobs.createdAt), desc(jobs.id))
+      .limit(input.limit + 1);
+    return {
+      jobs: rows.slice(0, input.limit).map(rowToJob),
+      hasMore: rows.length > input.limit,
+    };
   }
 
   public async transition(

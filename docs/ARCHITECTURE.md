@@ -2,10 +2,10 @@
 
 ## Current boundary
 
-AgentClear begins as a modular monolith. HTTP is an adapter, not the owner of job logic. `JobService` owns the create/read use cases and depends on a `JobRepository` port. `PostgresJobRepository` is the production adapter; tests can replace it without changing business behavior. The future MCP server will call the same service instead of duplicating lifecycle logic.
+AgentClear begins as a modular monolith. HTTP is an adapter, not the owner of job logic. `JobService` owns the create/read/list use cases and depends on repository ports. `PostgresJobRepository` is the production adapter; tests can replace it without changing business behavior. The MCP server is a thin authenticated Streamable HTTP adapter over the versioned REST/application boundary and does not duplicate lifecycle logic.
 
 ```text
-HTTP / future MCP
+REST HTTP <- stateless MCP adapter
        |
 authentication + validation
        |

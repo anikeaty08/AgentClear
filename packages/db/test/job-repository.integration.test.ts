@@ -14,6 +14,7 @@ describe.skipIf(databaseUrl === undefined)('PostgresJobRepository', () => {
   const repository = new PostgresJobRepository(client.db);
   const service = new JobService({
     repository,
+    listRepository: repository,
     clock: () => new Date('2026-08-23T00:00:00.000Z'),
     idGenerator: randomUUID,
   });
@@ -82,5 +83,35 @@ describe.skipIf(databaseUrl === undefined)('PostgresJobRepository', () => {
     await expect(service.createJob({ ...input, title: 'A different task' }, context)).rejects.toBeInstanceOf(
       IdempotencyKeyReusedError,
     );
+  });
+
+  it('filters and cursor-paginates jobs in a stable order', async () => {
+    for (const title of ['Job one', 'Job two', 'Job three']) {
+      await service.createJob(
+        { ...input, title },
+        {
+          actor: { type: 'agent', id: input.buyerAgentId },
+          idempotencyKey: randomUUID(),
+        },
+      );
+    }
+
+    const first = await service.listJobs({
+      buyerAgentId: input.buyerAgentId,
+      state: 'DRAFT',
+      limit: 2,
+    });
+    expect(first.jobs).toHaveLength(2);
+    expect(first.nextCursor).toEqual(expect.any(String));
+
+    const second = await service.listJobs({
+      buyerAgentId: input.buyerAgentId,
+      state: 'DRAFT',
+      limit: 2,
+      cursor: first.nextCursor,
+    });
+    expect(second.jobs).toHaveLength(1);
+    expect(second.nextCursor).toBeNull();
+    expect(new Set([...first.jobs, ...second.jobs].map(({ id }) => id)).size).toBe(3);
   });
 });

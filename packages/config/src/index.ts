@@ -3,6 +3,16 @@ import { z } from 'zod';
 const optionalEnvironmentValue = <T>(schema: z.ZodType<T>) =>
   z.preprocess((value) => (value === '' ? undefined : value), schema.optional());
 
+const httpUrlSchema = z.url().refine((value) => {
+  const protocol = new URL(value).protocol;
+  return protocol === 'http:' || protocol === 'https:';
+}, 'Only HTTP(S) URLs are supported.');
+
+const commaSeparatedListSchema = z
+  .string()
+  .transform((value) => value.split(',').map((item) => item.trim()).filter(Boolean))
+  .refine((items) => items.length > 0, 'At least one value is required.');
+
 const runtimeConfigSchema = z
   .object({
     NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
@@ -467,5 +477,109 @@ export function loadRuntimeConfig(environment: NodeJS.ProcessEnv = process.env):
     ...(storage === undefined ? {} : { storage }),
     ...(compute === undefined ? {} : { compute }),
     ...(sandbox === undefined ? {} : { sandbox }),
+  };
+}
+
+const mcpRuntimeConfigSchema = z
+  .object({
+    NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
+    MCP_HOST: z.string().min(1).default('127.0.0.1'),
+    MCP_PORT: z.coerce.number().int().min(1).max(65_535).default(3002),
+    AGENTCLEAR_API_BASE_URL: httpUrlSchema.default('http://127.0.0.1:3001'),
+    MCP_ALLOWED_HOSTS: optionalEnvironmentValue(commaSeparatedListSchema),
+    MCP_ALLOWED_ORIGINS: optionalEnvironmentValue(commaSeparatedListSchema),
+    MCP_MAX_BODY_BYTES: optionalEnvironmentValue(
+      z.coerce.number().int().min(1_024).max(4_194_304),
+    ),
+    MCP_MAX_RESPONSE_BYTES: optionalEnvironmentValue(
+      z.coerce.number().int().min(1_024).max(8_388_608),
+    ),
+    MCP_UPSTREAM_TIMEOUT_MS: optionalEnvironmentValue(
+      z.coerce.number().int().min(1_000).max(300_000),
+    ),
+    MCP_RATE_LIMIT_PER_MINUTE: optionalEnvironmentValue(
+      z.coerce.number().int().min(1).max(10_000),
+    ),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (
+      (value.MCP_HOST === '0.0.0.0' || value.MCP_HOST === '::')
+      && value.MCP_ALLOWED_HOSTS === undefined
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['MCP_ALLOWED_HOSTS'],
+        message: 'Public MCP binds require an explicit allowed-host list.',
+      });
+    }
+    for (const [index, origin] of (value.MCP_ALLOWED_ORIGINS ?? []).entries()) {
+      try {
+        const parsed = new URL(origin);
+        if (
+          (parsed.protocol !== 'http:' && parsed.protocol !== 'https:')
+          || parsed.origin !== origin.replace(/\/$/u, '')
+        ) {
+          throw new TypeError();
+        }
+      } catch {
+        context.addIssue({
+          code: 'custom',
+          path: ['MCP_ALLOWED_ORIGINS', index],
+          message: 'Allowed origins must be exact HTTP(S) origins without paths.',
+        });
+      }
+    }
+  });
+
+export type McpRuntimeConfig = {
+  nodeEnv: 'development' | 'test' | 'production';
+  host: string;
+  port: number;
+  apiBaseUrl: string;
+  allowedHosts: readonly string[];
+  allowedOrigins: readonly string[];
+  maxBodyBytes: number;
+  maxResponseBytes: number;
+  upstreamTimeoutMs: number;
+  rateLimitPerMinute: number;
+};
+
+export function loadMcpRuntimeConfig(
+  environment: NodeJS.ProcessEnv = process.env,
+): McpRuntimeConfig {
+  const parsed = mcpRuntimeConfigSchema.parse({
+    NODE_ENV: environment['NODE_ENV'],
+    MCP_HOST: environment['MCP_HOST'],
+    MCP_PORT: environment['MCP_PORT'],
+    AGENTCLEAR_API_BASE_URL: environment['AGENTCLEAR_API_BASE_URL'],
+    MCP_ALLOWED_HOSTS: environment['MCP_ALLOWED_HOSTS'],
+    MCP_ALLOWED_ORIGINS: environment['MCP_ALLOWED_ORIGINS'],
+    MCP_MAX_BODY_BYTES: environment['MCP_MAX_BODY_BYTES'],
+    MCP_MAX_RESPONSE_BYTES: environment['MCP_MAX_RESPONSE_BYTES'],
+    MCP_UPSTREAM_TIMEOUT_MS: environment['MCP_UPSTREAM_TIMEOUT_MS'],
+    MCP_RATE_LIMIT_PER_MINUTE: environment['MCP_RATE_LIMIT_PER_MINUTE'],
+  });
+  const apiUrl = new URL(parsed.AGENTCLEAR_API_BASE_URL);
+  if (apiUrl.pathname !== '/' || apiUrl.search !== '' || apiUrl.hash !== '') {
+    throw new TypeError('AGENTCLEAR_API_BASE_URL must not include a path, query, or fragment.');
+  }
+  const defaultHosts = parsed.MCP_HOST === '127.0.0.1' || parsed.MCP_HOST === '::1'
+    ? ['127.0.0.1', 'localhost', '::1']
+    : [parsed.MCP_HOST];
+
+  return {
+    nodeEnv: parsed.NODE_ENV,
+    host: parsed.MCP_HOST,
+    port: parsed.MCP_PORT,
+    apiBaseUrl: apiUrl.toString().replace(/\/$/u, ''),
+    allowedHosts: parsed.MCP_ALLOWED_HOSTS ?? defaultHosts,
+    allowedOrigins: (parsed.MCP_ALLOWED_ORIGINS ?? []).map(
+      (origin) => origin.replace(/\/$/u, ''),
+    ),
+    maxBodyBytes: parsed.MCP_MAX_BODY_BYTES ?? 1_048_576,
+    maxResponseBytes: parsed.MCP_MAX_RESPONSE_BYTES ?? 4_194_304,
+    upstreamTimeoutMs: parsed.MCP_UPSTREAM_TIMEOUT_MS ?? 180_000,
+    rateLimitPerMinute: parsed.MCP_RATE_LIMIT_PER_MINUTE ?? 60,
   };
 }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { loadRuntimeConfig } from '../src/index.js';
+import { loadMcpRuntimeConfig, loadRuntimeConfig } from '../src/index.js';
 
 const validEnvironment = {
   NODE_ENV: 'test',
@@ -241,5 +241,47 @@ describe('loadRuntimeConfig', () => {
         SANDBOX_CONTAINER_CLI: 'wsl-docker',
       }),
     ).toThrow('The WSL Docker bridge is for local development only.');
+  });
+});
+
+describe('loadMcpRuntimeConfig', () => {
+  it('defaults to a loopback-only MCP endpoint and API sidecar', () => {
+    expect(loadMcpRuntimeConfig({ NODE_ENV: 'test' })).toEqual({
+      nodeEnv: 'test',
+      host: '127.0.0.1',
+      port: 3002,
+      apiBaseUrl: 'http://127.0.0.1:3001',
+      allowedHosts: ['127.0.0.1', 'localhost', '::1'],
+      allowedOrigins: [],
+      maxBodyBytes: 1_048_576,
+      maxResponseBytes: 4_194_304,
+      upstreamTimeoutMs: 180_000,
+      rateLimitPerMinute: 60,
+    });
+  });
+
+  it('requires explicit host protection for a public bind', () => {
+    expect(() => loadMcpRuntimeConfig({ MCP_HOST: '0.0.0.0' })).toThrow(
+      'Public MCP binds require an explicit allowed-host list.',
+    );
+    expect(
+      loadMcpRuntimeConfig({
+        MCP_HOST: '0.0.0.0',
+        MCP_ALLOWED_HOSTS: 'mcp.agentclear.example',
+      }).allowedHosts,
+    ).toEqual(['mcp.agentclear.example']);
+    expect(() => loadMcpRuntimeConfig({ MCP_HOST: '::' })).toThrow(
+      'Public MCP binds require an explicit allowed-host list.',
+    );
+  });
+
+  it('accepts exact origins and rejects API base URLs with paths', () => {
+    expect(
+      loadMcpRuntimeConfig({ MCP_ALLOWED_ORIGINS: 'https://console.agentclear.example/' })
+        .allowedOrigins,
+    ).toEqual(['https://console.agentclear.example']);
+    expect(() =>
+      loadMcpRuntimeConfig({ AGENTCLEAR_API_BASE_URL: 'https://api.example/v1' }),
+    ).toThrow('AGENTCLEAR_API_BASE_URL must not include a path, query, or fragment.');
   });
 });

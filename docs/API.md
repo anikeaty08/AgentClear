@@ -139,6 +139,10 @@ When both reputation and Storage are configured, the same request then publishes
 
 `GET /v1/jobs/:id` requires `jobs:read` and returns the stored canonical agreement, current provider identity when assigned, agreement hash, internal base-unit budget, state, version, and timestamps.
 
+## List jobs
+
+`GET /v1/jobs` requires `jobs:read`. Optional query parameters are `state`, `buyerAgentId`, `providerAgentId`, `cursor`, and `limit` (1-100, default 25). Results use a stable descending `(createdAt, id)` order. Pass the opaque `data.nextCursor` unchanged to retrieve the next page; it is `null` on the final page.
+
 ## Errors
 
 ```json

@@ -2,11 +2,13 @@
 
 AgentClear is an outcome-verification and settlement layer for AI-agent commerce on 0G. It binds a structured task agreement to escrow, evidence-backed verification, settlement or refund, and transaction-backed agent reputation.
 
-The repository is under active development. The real local EVM vertical flow now reaches both terminal payment outcomes: create and quote an agreement, fund escrow, assign the provider, store and verify evidence, anchor `PASS` or `FAIL` in `OutcomeRegistry`, release or refund `JobEscrow`, write outcome feedback through the current ERC-8004 `ReputationRegistry` interface, and publish a portable content-addressed receipt. Executable deliverables can be evaluated in a real disposable, network-disabled Docker sandbox. The automated REST flows use PostgreSQL, real signed Anvil transactions, deployed contracts, and explicitly labelled controlled Storage/Compute/sandbox ports where CI cannot use external credentials or a privileged container daemon. Production 0G Storage, 0G Compute, sandbox, and config-driven ERC-8004 adapters are implemented, but a 0G testnet deployment, live Storage/Compute/reputation proof, MCP, and the operator UI remain in progress and are not simulated.
+The repository is under active development. The real local EVM vertical flow now reaches both terminal payment outcomes: create and quote an agreement, fund escrow, assign the provider, store and verify evidence, anchor `PASS` or `FAIL` in `OutcomeRegistry`, release or refund `JobEscrow`, write outcome feedback through the current ERC-8004 `ReputationRegistry` interface, and publish a portable content-addressed receipt. Executable deliverables can be evaluated in a real disposable, network-disabled Docker sandbox. A real MCP Streamable HTTP server exposes this working flow through the same REST/domain services. The automated flows use PostgreSQL, real signed Anvil transactions, deployed contracts, and explicitly labelled controlled Storage/Compute/sandbox ports where CI cannot use external credentials or a privileged container daemon. Production 0G Storage, 0G Compute, sandbox, MCP, and config-driven ERC-8004 adapters are implemented, but a 0G testnet deployment, live Storage/Compute/reputation proof, the remaining agent/cancellation MCP tools, and the operator UI remain in progress and are not simulated.
 
 ```mermaid
 flowchart LR
   Client[Buyer agent / operator] -->|Bearer key + idempotency key| API[Fastify REST API]
+  MCP[MCP client] -->|Streamable HTTP + scoped key| MCPServer[AgentClear MCP]
+  MCPServer --> API
   API --> Domain[Canonical agreement + state machine]
   Domain --> DB[(PostgreSQL)]
   DB --> Events[Immutable state events]
@@ -31,6 +33,7 @@ flowchart LR
 - `@0gfoundation/0g-storage-ts-sdk` 1.2.11 with `ethers` 6.13.1 for content-addressed evidence
 - `@0gfoundation/0g-compute-ts-sdk` 0.9.0 with a dedicated wallet for rubric verification
 - Digest-pinned Docker execution with network/root-filesystem/capability/resource isolation for untrusted Node.js modules
+- Official MCP TypeScript SDK 1.30 with stateless Streamable HTTP and the caller's scoped REST credential
 - Vitest unit and PostgreSQL integration tests
 - Solidity 0.8.24, Foundry 1.7.1, and OpenZeppelin Contracts 5.6.1
 
@@ -49,7 +52,7 @@ pnpm db:migrate
 pnpm dev
 ```
 
-The API listens on `http://127.0.0.1:3001` by default. Versioned routes require `Authorization: Bearer <BOOTSTRAP_API_KEY>`. Mutating job routes require an `Idempotency-Key` header. Funding and assignment remain disabled unless the complete optional chain group in `.env.example` is configured; outcome anchoring and final settlement additionally require `OUTCOME_REGISTRY_ADDRESS`. Transaction-backed reputation requires both ERC-8004 registry addresses. Provider submission requires the distinct provider bootstrap credential pair and `STORAGE_INDEXER_URL`; the provider agent ID must exactly match the assigned job. AI verification additionally requires the complete `COMPUTE_*` group and a dedicated funded wallet that is not the protocol chain signer. Agreements containing `sandbox_tests` require `SANDBOX_NODE_IMAGE` to be an immutable image reference ending in `@sha256:<digest>`.
+The API listens on `http://127.0.0.1:3001` and MCP on `http://127.0.0.1:3002/mcp` by default. Versioned routes and MCP requests require `Authorization: Bearer <scoped-api-key>`. Mutating operations require an idempotency key. Funding and assignment remain disabled unless the complete optional chain group in `.env.example` is configured; outcome anchoring and final settlement additionally require `OUTCOME_REGISTRY_ADDRESS`. Transaction-backed reputation requires both ERC-8004 registry addresses. Provider submission requires the distinct provider bootstrap credential pair and `STORAGE_INDEXER_URL`; the provider agent ID must exactly match the assigned job. AI verification additionally requires the complete `COMPUTE_*` group and a dedicated funded wallet that is not the protocol chain signer. Agreements containing `sandbox_tests` require `SANDBOX_NODE_IMAGE` to be an immutable image reference ending in `@sha256:<digest>`.
 
 ## Quality gates
 
@@ -68,6 +71,7 @@ forge test --root packages/contracts -vvv
 ## Repository map
 
 - `apps/api` -- Fastify transport and authentication boundary
+- `apps/mcp` -- official MCP Streamable HTTP adapter over the REST/application boundary
 - `packages/contracts` -- native-asset escrow, outcome commitments, and Foundry security tests
 - `packages/chain` -- viem escrow/outcome/ERC-8004 transaction preparation, broadcast, confirmation, and state attestation
 - `packages/domain` -- canonical agreements, state machine, commitments, deterministic verification, and application services
@@ -79,6 +83,6 @@ forge test --root packages/contracts -vvv
 - `.0g-skills` -- vendored 0G reference material; current official docs and installed package source remain higher authority
 - `docs` -- architecture, API, contracts, security, and testing notes matching implemented behavior
 
-See [`AGENTS.md`](./AGENTS.md) for the full product definition, [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) for current boundaries, [`docs/STORAGE.md`](./docs/STORAGE.md) and [`docs/COMPUTE.md`](./docs/COMPUTE.md) for the exact 0G integrations, [`docs/SANDBOX.md`](./docs/SANDBOX.md) for untrusted-code isolation, [`docs/ERC8004.md`](./docs/ERC8004.md) for verified registry sources and configuration, and [`docs/RECEIPTS.md`](./docs/RECEIPTS.md) for receipt integrity and retrieval.
+See [`AGENTS.md`](./AGENTS.md) for the full product definition, [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) for current boundaries, [`docs/MCP.md`](./docs/MCP.md) for the machine tool surface, [`docs/STORAGE.md`](./docs/STORAGE.md) and [`docs/COMPUTE.md`](./docs/COMPUTE.md) for the exact 0G integrations, [`docs/SANDBOX.md`](./docs/SANDBOX.md) for untrusted-code isolation, [`docs/ERC8004.md`](./docs/ERC8004.md) for verified registry sources and configuration, and [`docs/RECEIPTS.md`](./docs/RECEIPTS.md) for receipt integrity and retrieval.
 
 No live contract address, transaction hash, 0G Storage reference, Compute receipt, or ERC-8004 deployment is published yet because none has been exercised on 0G testnet from this repository.

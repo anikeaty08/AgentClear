@@ -200,6 +200,12 @@ export async function buildApp(options: BuildAppOptions) {
       });
   });
 
+  app.get('/v1/jobs', async (request) => {
+    requireScope(request, 'jobs:read');
+    const result = await options.jobService.listJobs(request.query);
+    return { data: result, meta: { requestId: request.id } };
+  });
+
   app.get('/v1/jobs/:id', async (request) => {
     requireScope(request, 'jobs:read');
     const { id } = jobIdParamsSchema.parse(request.params);
