@@ -3,6 +3,11 @@ import { z } from 'zod';
 const optionalEnvironmentValue = <T>(schema: z.ZodType<T>) =>
   z.preprocess((value) => (value === '' ? undefined : value), schema.optional());
 
+const bootstrapApiKeySchema = z
+  .string()
+  .min(32)
+  .refine((value) => !/^ac_/iu.test(value), 'Bootstrap keys cannot use the durable key namespace.');
+
 const httpUrlSchema = z.url().refine((value) => {
   const protocol = new URL(value).protocol;
   return protocol === 'http:' || protocol === 'https:';
@@ -21,9 +26,9 @@ const runtimeConfigSchema = z
     LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
     DATABASE_URL: z.string().min(1),
     API_KEY_PEPPER: z.string().min(32),
-    BOOTSTRAP_API_KEY: z.string().min(32),
+    BOOTSTRAP_API_KEY: bootstrapApiKeySchema,
     BOOTSTRAP_PRINCIPAL_ID: z.string().min(1).default('local-operator'),
-    PROVIDER_BOOTSTRAP_API_KEY: optionalEnvironmentValue(z.string().min(32)),
+    PROVIDER_BOOTSTRAP_API_KEY: optionalEnvironmentValue(bootstrapApiKeySchema),
     PROVIDER_BOOTSTRAP_AGENT_ID: optionalEnvironmentValue(
       z.string().regex(/^erc8004:\d+:\d+$/),
     ),

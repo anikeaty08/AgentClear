@@ -26,7 +26,7 @@ PostgresJobRepository
 
 ## Create-job data flow
 
-1. Fastify authenticates a bearer API key and requires `jobs:write`.
+1. Fastify authenticates a bootstrap or PostgreSQL-backed bearer API key and requires `jobs:write`.
 2. Zod validates the structured agreement and rejects unknown fields.
 3. `JobService` normalizes the deadline, converts the native-token decimal amount to 18-decimal base units without floating-point arithmetic, creates a UUID, and commits the canonical agreement with SHA-256.
 4. `PostgresJobRepository` claims `(scope, idempotency key)` and writes the job, normalized requirements, and initial immutable `DRAFT` event in one transaction.
@@ -40,6 +40,7 @@ PostgresJobRepository
 - Agreement hashes are unique and computed from canonical JSON.
 - API errors never expose stack traces.
 - Bootstrap secrets are server-only, redacted from logs, and rejected when obvious placeholders are used in production.
+- Durable API-key plaintext exists only in the create response. The database stores an HMAC digest, principal, scopes, expiry/revocation state, and audit timestamps; scope delegation cannot exceed the caller.
 
 ## Chain transaction boundary
 
@@ -150,4 +151,4 @@ agreement -> 0G Chain escrow -> 0G Storage submission evidence
           -> outcome anchor -> settle/refund -> ERC-8004 feedback -> receipt
 ```
 
-Outcome anchoring, settlement/refund, ERC-8004 feedback, portable receipts, the real 0G Compute SDK adapter, and the disposable Docker sandbox are implemented locally. Each adapter exposes degraded health until it has valid configuration, and integration tests distinguish controlled local boundaries from live 0G testnet proof. MCP and web adapters remain to be connected to these same services.
+Outcome anchoring, settlement/refund, ERC-8004 feedback, portable receipts, durable scoped API keys, the real 0G Compute SDK adapter, the disposable Docker sandbox, and ten REST-backed MCP tools are implemented locally. Each adapter exposes degraded health until it has valid configuration, and integration tests distinguish controlled local boundaries from live 0G testnet proof. The remaining MCP agent/cancellation tools and web adapter still need to connect to these same services.

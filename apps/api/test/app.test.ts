@@ -1,4 +1,5 @@
 import {
+  ApiKeyService,
   IdempotencyKeyReusedError,
   InvalidJobTransitionError,
   JobService,
@@ -6,6 +7,10 @@ import {
   VerificationQueryService,
   type SubmissionRepository,
   type VerificationRepository,
+  type ApiKeyCredentialRecord,
+  type ApiKeyRecord,
+  type ApiKeyRepository,
+  type ListApiKeysPersistenceInput,
   type CreateJobPersistenceInput,
   type CreateJobPersistenceResult,
   type Job,
@@ -19,7 +24,55 @@ import {
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { buildApp } from '../src/app.js';
-import type { Authenticator } from '../src/auth.js';
+import {
+  CompositeAuthenticator,
+  DurableApiKeyAuthenticator,
+  type Authenticator,
+} from '../src/auth.js';
+
+class MemoryApiKeyRepository implements ApiKeyRepository {
+  readonly #records = new Map<string, ApiKeyCredentialRecord>();
+
+  public async create(record: ApiKeyCredentialRecord): Promise<ApiKeyCredentialRecord> {
+    this.#records.set(record.id, structuredClone(record));
+    return structuredClone(record);
+  }
+
+  public async findById(id: string): Promise<ApiKeyCredentialRecord | null> {
+    const record = this.#records.get(id);
+    return record === undefined ? null : structuredClone(record);
+  }
+
+  public async list(
+    input: ListApiKeysPersistenceInput,
+  ): Promise<{ apiKeys: ApiKeyRecord[]; hasMore: boolean }> {
+    const records = [...this.#records.values()]
+      .filter((record) => input.principalId === undefined || record.principalId === input.principalId)
+      .filter(
+        (record) => input.principalKind === undefined
+          || record.principalKind === input.principalKind,
+      )
+      .sort((left, right) =>
+        right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id),
+      );
+    return {
+      apiKeys: records.slice(0, input.limit).map(toPublicApiKey),
+      hasMore: records.length > input.limit,
+    };
+  }
+
+  public async markUsed(id: string, usedAt: string): Promise<void> {
+    const record = this.#records.get(id);
+    if (record !== undefined) record.lastUsedAt = usedAt;
+  }
+
+  public async revoke(id: string, revokedAt: string): Promise<ApiKeyRecord | null> {
+    const record = this.#records.get(id);
+    if (record === undefined) return null;
+    record.revokedAt ??= revokedAt;
+    return toPublicApiKey(record);
+  }
+}
 
 class MemoryJobRepository implements JobRepository, JobListRepository {
   readonly #jobs = new Map<string, Job>();
@@ -113,6 +166,7 @@ const authenticator: Authenticator = {
             'jobs:settle',
             'jobs:reputation',
             'jobs:receipt',
+            'api-keys:manage',
           ]),
         }
       : null;
@@ -143,6 +197,10 @@ const apps: Awaited<ReturnType<typeof buildApp>>[] = [];
 
 async function createTestApp(options: { sandboxHealth?: () => Promise<unknown> } = {}) {
   const repository = new MemoryJobRepository();
+  const apiKeyService = new ApiKeyService({
+    repository: new MemoryApiKeyRepository(),
+    pepper: 'api-test-pepper-with-at-least-thirty-two-bytes',
+  });
   const submissionRepository = {
     async listByJob() {
       return [];
@@ -154,6 +212,7 @@ async function createTestApp(options: { sandboxHealth?: () => Promise<unknown> }
     },
   } as unknown as VerificationRepository;
   const app = await buildApp({
+    apiKeyService,
     jobRepository: repository,
     jobService: new JobService({
       repository,
@@ -162,7 +221,10 @@ async function createTestApp(options: { sandboxHealth?: () => Promise<unknown> }
     }),
     submissionQueryService: new SubmissionQueryService(repository, submissionRepository),
     verificationQueryService: new VerificationQueryService(repository, verificationRepository),
-    authenticator,
+    authenticator: new CompositeAuthenticator([
+      authenticator,
+      new DurableApiKeyAuthenticator(apiKeyService),
+    ]),
     ...options,
   });
   apps.push(app);
@@ -442,4 +504,77 @@ describe('AgentClear API', () => {
     });
     expect(response.body).not.toContain('stack');
   });
+
+  it('creates a one-time durable key, authenticates it, lists metadata, and revokes it', async () => {
+    const app = await createTestApp();
+    const created = await app.inject({
+      method: 'POST',
+      url: '/v1/api-keys',
+      headers: { authorization: 'Bearer valid-test-api-key' },
+      payload: {
+        label: 'Provider runtime',
+        principalId: 'erc8004:16602:456',
+        principalKind: 'agent',
+        scopes: ['jobs:read', 'jobs:submit'],
+      },
+    });
+    expect(created.statusCode).toBe(201);
+    expect(created.headers['cache-control']).toBe('no-store');
+    const createdBody = created.json();
+    const secret = createdBody.data.secret as string;
+    const keyId = createdBody.data.apiKey.id as string;
+    expect(secret).toMatch(/^ac_[0-9a-f-]{36}\.[A-Za-z0-9_-]{43}$/u);
+    expect(createdBody.data.apiKey).not.toHaveProperty('secretDigest');
+
+    const authenticated = await app.inject({
+      method: 'GET',
+      url: '/v1/jobs?limit=1',
+      headers: { authorization: `Bearer ${secret}` },
+    });
+    expect(authenticated.statusCode).toBe(200);
+
+    const listed = await app.inject({
+      method: 'GET',
+      url: '/v1/api-keys',
+      headers: { authorization: 'Bearer valid-test-api-key' },
+    });
+    expect(listed.statusCode).toBe(200);
+    expect(listed.body).not.toContain(secret);
+    expect(listed.json().data.apiKeys[0]).toMatchObject({
+      id: keyId,
+      label: 'Provider runtime',
+      lastUsedAt: expect.any(String),
+    });
+
+    const revoked = await app.inject({
+      method: 'DELETE',
+      url: `/v1/api-keys/${keyId}`,
+      headers: { authorization: 'Bearer valid-test-api-key' },
+    });
+    expect(revoked.statusCode).toBe(200);
+    expect(revoked.json().data.apiKey.revokedAt).toEqual(expect.any(String));
+
+    const rejected = await app.inject({
+      method: 'GET',
+      url: '/v1/jobs?limit=1',
+      headers: { authorization: `Bearer ${secret}` },
+    });
+    expect(rejected.statusCode).toBe(401);
+  });
 });
+
+function toPublicApiKey(record: ApiKeyCredentialRecord): ApiKeyRecord {
+  return {
+    id: record.id,
+    label: record.label,
+    prefix: record.prefix,
+    principalId: record.principalId,
+    principalKind: record.principalKind,
+    scopes: record.scopes,
+    expiresAt: record.expiresAt,
+    revokedAt: record.revokedAt,
+    lastUsedAt: record.lastUsedAt,
+    createdBy: record.createdBy,
+    createdAt: record.createdAt,
+  };
+}

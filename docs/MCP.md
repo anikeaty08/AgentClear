@@ -12,7 +12,7 @@ Every MCP request requires the caller's scoped AgentClear API key:
 Authorization: Bearer <agentclear-api-key>
 ```
 
-The key remains in an HTTP header and is never accepted as a tool argument, returned in content, or written to logs. Buyer/operator and provider calls should use distinct keys. Upstream REST scopes and the funding service's spending ceiling remain authoritative; the MCP process never receives a wallet private key.
+The key remains in an HTTP header and is never accepted as a tool argument, returned in content, or written to logs. Issue distinct durable buyer/operator and provider keys through the REST API; expiry and revocation take effect because every MCP operation re-authenticates upstream. REST scopes and the funding service's spending ceiling remain authoritative; the MCP process never receives a wallet private key.
 
 The transport is stateless and JSON-response based. It validates the `Host` header, rejects browser `Origin` values unless explicitly allowed, limits request and upstream response bytes, applies a per-source in-memory request cap, and times out upstream requests. Deploy it behind TLS. A public bind requires explicit `MCP_ALLOWED_HOSTS`; configure exact browser origins only when browser MCP access is intended.
 

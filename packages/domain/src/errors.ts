@@ -1,4 +1,8 @@
 export type DomainErrorCode =
+  | 'API_KEY_NOT_FOUND'
+  | 'API_KEY_PERMISSION_DENIED'
+  | 'API_KEY_SCOPE_ESCALATION'
+  | 'API_KEY_EXPIRY_INVALID'
   | 'IDEMPOTENCY_KEY_REUSED'
   | 'INVALID_JOB_TRANSITION'
   | 'JOB_DEADLINE_NOT_FUTURE'
@@ -39,6 +43,38 @@ export class DomainError extends Error {
   ) {
     super(message);
     this.name = new.target.name;
+  }
+}
+
+export class ApiKeyNotFoundError extends DomainError {
+  public constructor(id: string) {
+    super('API_KEY_NOT_FOUND', `API key ${id} was not found.`, 404);
+  }
+}
+
+export class ApiKeyPermissionDeniedError extends DomainError {
+  public constructor() {
+    super(
+      'API_KEY_PERMISSION_DENIED',
+      'The caller cannot manage API keys for the requested principal.',
+      403,
+    );
+  }
+}
+
+export class ApiKeyScopeEscalationError extends DomainError {
+  public constructor() {
+    super(
+      'API_KEY_SCOPE_ESCALATION',
+      'A delegated API key cannot receive scopes the caller does not hold.',
+      403,
+    );
+  }
+}
+
+export class ApiKeyExpiryInvalidError extends DomainError {
+  public constructor() {
+    super('API_KEY_EXPIRY_INVALID', 'The API key expiry must be in the future.', 422);
   }
 }
 

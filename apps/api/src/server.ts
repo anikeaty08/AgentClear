@@ -8,6 +8,7 @@ import {
 } from '@agentclear/chain';
 import {
   createDatabaseClient,
+  PostgresApiKeyRepository,
   PostgresExclusiveExecutor,
   PostgresAssignmentRepository,
   PostgresEscrowRepository,
@@ -19,6 +20,7 @@ import {
   PostgresReceiptRepository,
 } from '@agentclear/db';
 import {
+  ApiKeyService,
   AssignmentService,
   FundingService,
   JobService,
@@ -34,12 +36,20 @@ import { ZeroGStorageClient } from '@agentclear/storage';
 import { DockerSandboxVerifier, createWslDockerSandbox } from '@agentclear/sandbox';
 
 import { buildApp } from './app.js';
-import { BootstrapApiKeyAuthenticator, CompositeAuthenticator } from './auth.js';
+import {
+  BootstrapApiKeyAuthenticator,
+  CompositeAuthenticator,
+  DurableApiKeyAuthenticator,
+} from './auth.js';
 
 const config = loadRuntimeConfig();
 const database = createDatabaseClient(config.databaseUrl);
 const jobRepository = new PostgresJobRepository(database.db);
 const jobService = new JobService({ repository: jobRepository, listRepository: jobRepository });
+const apiKeyService = new ApiKeyService({
+  repository: new PostgresApiKeyRepository(database.db),
+  pepper: config.auth.apiKeyPepper,
+});
 const chain =
   config.chain === undefined
     ? undefined
@@ -227,6 +237,7 @@ const authenticators = [
     config.auth.apiKeyPepper,
     config.auth.bootstrapPrincipalId,
   ),
+  new DurableApiKeyAuthenticator(apiKeyService),
 ];
 if (config.auth.providerBootstrap !== undefined) {
   authenticators.push(
@@ -242,6 +253,7 @@ if (config.auth.providerBootstrap !== undefined) {
 const authenticator = new CompositeAuthenticator(authenticators);
 
 const app = await buildApp({
+  apiKeyService,
   jobService,
   jobRepository,
   authenticator,

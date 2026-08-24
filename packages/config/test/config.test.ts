@@ -132,6 +132,15 @@ describe('loadRuntimeConfig', () => {
     ).toThrow('Operator and provider bootstrap keys must be distinct.');
   });
 
+  it('reserves the ac_ prefix for revocable durable keys', () => {
+    expect(() =>
+      loadRuntimeConfig({
+        ...validEnvironment,
+        BOOTSTRAP_API_KEY: `ac_${'a'.repeat(32)}`,
+      }),
+    ).toThrow('Bootstrap keys cannot use the durable key namespace.');
+  });
+
   it('derives 0G Storage signer settings only from a complete chain configuration', () => {
     expect(() =>
       loadRuntimeConfig({

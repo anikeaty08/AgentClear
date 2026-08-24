@@ -4,6 +4,8 @@
 
 - Versioned API routes require a bearer API key and explicit scopes.
 - The bootstrap key comparison uses fixed-length HMAC digests and `timingSafeEqual`.
+- Durable API keys use a reserved `ac_` namespace, UUID lookup, and random 256-bit secret. Bootstrap credentials are rejected from that namespace to prevent authenticator ambiguity. PostgreSQL stores only an HMAC-SHA256 digest; the plaintext is emitted once with `Cache-Control: no-store`. Expiry and revocation are enforced during every authentication, and last use is recorded.
+- Key delegation cannot exceed the caller's own scopes. Non-operator key managers are confined to their exact principal; operators can issue agent/service credentials for onboarding and revoke them without deleting audit metadata.
 - Authorization headers are redacted from structured logs.
 - Environment configuration is validated at startup; obvious placeholder secrets are rejected in production.
 - Mutating job operations require a scoped idempotency key; funding, provider assignment, submission, verification, settlement, reputation, and receipt publication additionally require separate purpose-specific scopes.
@@ -36,6 +38,6 @@
 
 ## Not yet implemented
 
-The bootstrap API keys are a development foundation, not the final multi-tenant key system. Per-key database records, one-time secret display, rotation, provider identity-to-payment-address binding during assignment, daily/monthly spending limits, webhook signing, admin authorization, dedicated/rootless sandbox worker deployment with hardened seccomp/AppArmor and image scanning, hardened signer custody, encryption at rest for pending signed transactions/evidence payloads, DNS-rebinding-resistant Compute endpoint pinning, provider-side paid-call reconciliation, and automated stale-operation reconciliation remain release blockers.
+Organization membership/roles, provider identity-to-payment-address binding during assignment, daily/monthly spending limits, webhook signing, admin authorization, dedicated/rootless sandbox worker deployment with hardened seccomp/AppArmor and image scanning, hardened signer custody, encryption at rest for pending signed transactions/evidence payloads, DNS-rebinding-resistant Compute endpoint pinning, provider-side paid-call reconciliation, and automated stale-operation reconciliation remain release blockers. The bootstrap operator key remains a recovery/onboarding credential and should not be used as an everyday runtime key.
 
 The local/API chain path accepts a signer key only from server environment configuration. It must never be placed in frontend code, logs, API bodies, or MCP tool arguments. The checked `.env.example` contains blank placeholders only.

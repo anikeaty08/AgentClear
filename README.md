@@ -27,7 +27,7 @@ flowchart LR
 ## Current stack
 
 - Node.js 24, TypeScript 6, pnpm workspaces, and Turborepo
-- Fastify 5 with Zod validation, scoped bootstrap API-key authentication, request IDs, stable errors, and rate limiting
+- Fastify 5 with Zod validation, PostgreSQL-backed scoped API keys, one-time secret issuance, request IDs, stable errors, and rate limiting
 - PostgreSQL 17 with Drizzle ORM and checked SQL migrations
 - viem-based, config-driven ERC-8004 identity/reputation adapter using the current registry ABI
 - `@0gfoundation/0g-storage-ts-sdk` 1.2.11 with `ethers` 6.13.1 for content-addressed evidence
@@ -52,7 +52,7 @@ pnpm db:migrate
 pnpm dev
 ```
 
-The API listens on `http://127.0.0.1:3001` and MCP on `http://127.0.0.1:3002/mcp` by default. Versioned routes and MCP requests require `Authorization: Bearer <scoped-api-key>`. Mutating operations require an idempotency key. Funding and assignment remain disabled unless the complete optional chain group in `.env.example` is configured; outcome anchoring and final settlement additionally require `OUTCOME_REGISTRY_ADDRESS`. Transaction-backed reputation requires both ERC-8004 registry addresses. Provider submission requires the distinct provider bootstrap credential pair and `STORAGE_INDEXER_URL`; the provider agent ID must exactly match the assigned job. AI verification additionally requires the complete `COMPUTE_*` group and a dedicated funded wallet that is not the protocol chain signer. Agreements containing `sandbox_tests` require `SANDBOX_NODE_IMAGE` to be an immutable image reference ending in `@sha256:<digest>`.
+The API listens on `http://127.0.0.1:3001` and MCP on `http://127.0.0.1:3002/mcp` by default. Versioned routes and MCP requests require `Authorization: Bearer <scoped-api-key>`. Use the bootstrap operator key once to issue PostgreSQL-backed runtime keys through `POST /v1/api-keys`; plaintext secrets are returned only in that response. Mutating job operations require an idempotency key. Funding and assignment remain disabled unless the complete optional chain group in `.env.example` is configured; outcome anchoring and final settlement additionally require `OUTCOME_REGISTRY_ADDRESS`. Transaction-backed reputation requires both ERC-8004 registry addresses. Provider submission requires a durable agent key (or the optional local provider bootstrap credential) whose principal ID exactly matches the assigned job, plus `STORAGE_INDEXER_URL`. AI verification additionally requires the complete `COMPUTE_*` group and a dedicated funded wallet that is not the protocol chain signer. Agreements containing `sandbox_tests` require `SANDBOX_NODE_IMAGE` to be an immutable image reference ending in `@sha256:<digest>`.
 
 ## Quality gates
 

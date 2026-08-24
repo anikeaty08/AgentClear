@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 
 import rateLimit from '@fastify/rate-limit';
 import type {
+  ApiKeyService,
   AssignmentService,
   FundingService,
   JobRepository,
@@ -72,6 +73,7 @@ function requireScope(request: FastifyRequest, scope: AuthScope): AuthPrincipal 
 }
 
 export type BuildAppOptions = {
+  apiKeyService?: ApiKeyService;
   jobService: JobService;
   jobRepository: JobRepository;
   authenticator: Authenticator;
@@ -527,6 +529,52 @@ export async function buildApp(options: BuildAppOptions) {
       .header('content-disposition', `attachment; filename="agentclear-receipt-${receipt.id}.json"`)
       .header('etag', `"${receipt.receiptHash}"`)
       .send(receipt.canonicalPayload);
+  });
+
+  app.post('/v1/api-keys', async (request, reply) => {
+    const principal = requireScope(request, 'api-keys:manage');
+    if (options.apiKeyService === undefined) {
+      throw new ApiError(
+        'API_KEY_MANAGEMENT_UNAVAILABLE',
+        'Durable API key management is not configured.',
+        503,
+      );
+    }
+    const result = await options.apiKeyService.createKey(request.body, principal);
+    return reply
+      .status(201)
+      .header('cache-control', 'no-store')
+      .send({
+        data: { apiKey: result.apiKey, secret: result.secret },
+        meta: { requestId: request.id, secretShownOnce: true },
+      });
+  });
+
+  app.get('/v1/api-keys', async (request) => {
+    const principal = requireScope(request, 'api-keys:manage');
+    if (options.apiKeyService === undefined) {
+      throw new ApiError(
+        'API_KEY_MANAGEMENT_UNAVAILABLE',
+        'Durable API key management is not configured.',
+        503,
+      );
+    }
+    const result = await options.apiKeyService.listKeys(request.query, principal);
+    return { data: result, meta: { requestId: request.id } };
+  });
+
+  app.delete('/v1/api-keys/:id', async (request) => {
+    const principal = requireScope(request, 'api-keys:manage');
+    if (options.apiKeyService === undefined) {
+      throw new ApiError(
+        'API_KEY_MANAGEMENT_UNAVAILABLE',
+        'Durable API key management is not configured.',
+        503,
+      );
+    }
+    const { id } = jobIdParamsSchema.parse(request.params);
+    const apiKey = await options.apiKeyService.revokeKey(id, principal);
+    return { data: { apiKey }, meta: { requestId: request.id } };
   });
 
   return app;

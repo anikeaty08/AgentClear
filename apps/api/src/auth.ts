@@ -1,26 +1,25 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 
-export const AUTH_SCOPES = [
-  'jobs:read',
-  'jobs:write',
-  'jobs:fund',
-  'jobs:assign',
-  'jobs:submit',
-  'jobs:verify',
-  'jobs:settle',
-  'jobs:reputation',
-  'jobs:receipt',
-] as const;
-export type AuthScope = (typeof AUTH_SCOPES)[number];
+import {
+  AUTH_SCOPES,
+  type ApiKeyService,
+  type AuthPrincipal,
+  type AuthScope,
+} from '@agentclear/domain';
 
-export type AuthPrincipal = {
-  id: string;
-  kind: 'operator' | 'agent' | 'service';
-  scopes: ReadonlySet<AuthScope>;
-};
+export { AUTH_SCOPES };
+export type { AuthPrincipal, AuthScope };
 
 export interface Authenticator {
   authenticate(apiKey: string): Promise<AuthPrincipal | null>;
+}
+
+export class DurableApiKeyAuthenticator implements Authenticator {
+  public constructor(private readonly service: ApiKeyService) {}
+
+  public async authenticate(apiKey: string): Promise<AuthPrincipal | null> {
+    return this.service.authenticate(apiKey);
+  }
 }
 
 export class BootstrapApiKeyAuthenticator implements Authenticator {
@@ -33,6 +32,9 @@ export class BootstrapApiKeyAuthenticator implements Authenticator {
     private readonly kind: AuthPrincipal['kind'] = 'operator',
     private readonly scopes: ReadonlySet<AuthScope> = new Set(AUTH_SCOPES),
   ) {
+    if (/^ac_/iu.test(apiKey)) {
+      throw new TypeError('Bootstrap API keys cannot use the durable key namespace.');
+    }
     this.#expectedDigest = this.#digest(apiKey, pepper);
     this.pepper = pepper;
   }

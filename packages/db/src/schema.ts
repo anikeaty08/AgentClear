@@ -1,4 +1,6 @@
 import type {
+  AuthPrincipalKind,
+  AuthScope,
   JobAgreement,
   JobState,
   JsonValue,
@@ -12,6 +14,7 @@ import { sql } from 'drizzle-orm';
 import {
   boolean,
   bigint,
+  check,
   index,
   integer,
   jsonb,
@@ -35,6 +38,11 @@ export const jobActorTypeEnum = pgEnum('job_actor_type', [
   'service',
   'verifier',
   'resolver',
+]);
+export const apiKeyPrincipalKindEnum = pgEnum('api_key_principal_kind', [
+  'operator',
+  'agent',
+  'service',
 ]);
 export const escrowStatusEnum = pgEnum('escrow_status', [
   'PENDING',
@@ -165,6 +173,52 @@ export const idempotencyRecords = pgTable(
   (table) => [
     primaryKey({ columns: [table.scope, table.key] }),
     index('idempotency_records_expires_at_idx').on(table.expiresAt),
+  ],
+);
+
+export const apiKeys = pgTable(
+  'api_keys',
+  {
+    id: uuid('id').primaryKey(),
+    label: varchar('label', { length: 100 }).notNull(),
+    prefix: varchar('prefix', { length: 20 }).notNull(),
+    secretDigest: varchar('secret_digest', { length: 64 }).notNull(),
+    principalId: text('principal_id').notNull(),
+    principalKind: apiKeyPrincipalKindEnum('principal_kind').$type<AuthPrincipalKind>().notNull(),
+    scopes: text('scopes').array().$type<AuthScope[]>().notNull(),
+    expiresAt: timestamp('expires_at', { withTimezone: true, mode: 'date' }),
+    revokedAt: timestamp('revoked_at', { withTimezone: true, mode: 'date' }),
+    lastUsedAt: timestamp('last_used_at', { withTimezone: true, mode: 'date' }),
+    createdBy: text('created_by').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull(),
+  },
+  (table) => [
+    unique('api_keys_secret_digest_unique').on(table.secretDigest),
+    index('api_keys_principal_created_at_idx').on(
+      table.principalKind,
+      table.principalId,
+      table.createdAt,
+    ),
+    index('api_keys_active_expiry_idx').on(table.revokedAt, table.expiresAt),
+    check('api_keys_label_not_blank_check', sql`length(btrim(${table.label})) > 0`),
+    check('api_keys_secret_digest_format_check', sql`${table.secretDigest} ~ '^[0-9a-f]{64}$'`),
+    check(
+      'api_keys_principal_id_format_check',
+      sql`length(${table.principalId}) between 1 and 200 and ${table.principalId} ~ '^[A-Za-z0-9._:-]+$'`,
+    ),
+    check(
+      'api_keys_agent_identity_check',
+      sql`${table.principalKind} <> 'agent' or ${table.principalId} ~ '^erc8004:[0-9]+:[0-9]+$'`,
+    ),
+    check('api_keys_scopes_not_empty_check', sql`cardinality(${table.scopes}) > 0`),
+    check(
+      'api_keys_scope_values_check',
+      sql`${table.scopes} <@ array['jobs:read','jobs:write','jobs:fund','jobs:assign','jobs:submit','jobs:verify','jobs:settle','jobs:reputation','jobs:receipt','api-keys:manage']::text[]`,
+    ),
+    check(
+      'api_keys_expiry_after_creation_check',
+      sql`${table.expiresAt} is null or ${table.expiresAt} > ${table.createdAt}`,
+    ),
   ],
 );
 
@@ -651,6 +705,7 @@ export const receipts = pgTable(
 );
 
 export const databaseSchema = {
+  apiKeys,
   jobs,
   jobRequirements,
   jobStateEvents,
